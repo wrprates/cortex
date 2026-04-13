@@ -1,0 +1,38 @@
+# Env
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Docker volumes (caso alguém rode local fora do compose)
+data/
+volumes/
+tmp/
+
+# Logs
+*.log
+logs/
+
+# Artefatos locais — nunca subir dados de clientes
+artifacts/
+datasets/
+notebooks/*.ipynb_checkpoints/
+
+# Claude/agent runtime
+.claude/state/
