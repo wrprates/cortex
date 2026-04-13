@@ -114,6 +114,7 @@ volumes:
   minio_data:
   kestra_data:
   sandbox_tmp:
+    name: cortex_sandbox_tmp
 
 networks:
   cortex:

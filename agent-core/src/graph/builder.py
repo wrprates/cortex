@@ -7,7 +7,7 @@ from . import nodes
 from .state import ProjectState
 
 
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, *, use_postgres: bool = True):
     """
     Constrói o grafo LangGraph com human-in-the-loop em dois pontos:
     - após 'plan' (aprovação do plano inicial)
@@ -37,7 +37,14 @@ def build_graph(checkpointer=None):
     )
     g.add_edge("report", END)
 
+    if checkpointer is None:
+        if use_postgres:
+            from .checkpointer import get_checkpointer
+            checkpointer = get_checkpointer()
+        else:
+            checkpointer = MemorySaver()
+
     return g.compile(
-        checkpointer=checkpointer or MemorySaver(),
+        checkpointer=checkpointer,
         interrupt_after=["plan", "modeling"],
     )

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +16,8 @@ from .docker_client import get_docker
 logger = logging.getLogger(__name__)
 
 Language = Literal["python", "r", "notebook"]
+
+SANDBOX_ROOT_IN_SANDBOX = "/sandbox_root"
 
 
 @dataclass
@@ -38,28 +39,37 @@ def run_code(
     keep_workspace: bool = False,
 ) -> SandboxResult:
     """
-    Spawna um container sandbox efêmero, executa o código, coleta output.
+    Spawna container sandbox efêmero em um subdiretório de uma named volume
+    compartilhada entre agent-core e sandbox.
 
-    Segurança: network_mode=none, sem mounts no host, limites de mem/cpu e timeout.
+    Portabilidade: usamos named volume (não bind mount do host) porque o Docker
+    daemon que spawna o sandbox enxerga paths do HOST, não do agent-core.
+    Named volume é resolvida pelo daemon igual no Mac e no Linux.
     """
     settings = get_settings()
     client = get_docker()
 
-    workspace = Path(tempfile.mkdtemp(prefix="cortex-sbx-", dir="/tmp/sandbox"))
-    (workspace / "inputs").mkdir(parents=True, exist_ok=True)
-    (workspace / "outputs").mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex[:12]
+
+    # Path visto de dentro do agent-core (onde a named volume está montada):
+    workspace_in_core = Path(settings.sandbox_shared_mount) / run_id
+    (workspace_in_core / "inputs").mkdir(parents=True, exist_ok=True)
+    (workspace_in_core / "outputs").mkdir(parents=True, exist_ok=True)
+
+    # Path visto de dentro do container sandbox (working_dir):
+    workspace_in_sandbox = f"{SANDBOX_ROOT_IN_SANDBOX}/{run_id}"
 
     script_name = {"python": "script.py", "r": "script.R", "notebook": "notebook.ipynb"}[language]
-    (workspace / script_name).write_text(code, encoding="utf-8")
+    (workspace_in_core / script_name).write_text(code, encoding="utf-8")
 
     if meta:
-        (workspace / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+        (workspace_in_core / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
 
     for filename, data in (inputs or {}).items():
-        (workspace / "inputs" / filename).write_bytes(data)
+        (workspace_in_core / "inputs" / filename).write_bytes(data)
 
     effective_timeout = timeout or settings.sandbox_timeout_seconds
-    container_name = f"cortex-sbx-{uuid.uuid4().hex[:10]}"
+    container_name = f"cortex-sbx-{run_id}"
 
     logger.info(
         "Spawning sandbox container=%s lang=%s timeout=%s mem=%s",
@@ -83,9 +93,13 @@ def run_code(
             mem_limit=settings.sandbox_memory_limit,
             nano_cpus=int(settings.sandbox_cpu_limit * 1e9),
             pids_limit=256,
-            read_only=False,
-            volumes={str(workspace): {"bind": "/workspace", "mode": "rw"}},
-            working_dir="/workspace",
+            volumes={
+                settings.sandbox_shared_volume: {
+                    "bind": SANDBOX_ROOT_IN_SANDBOX,
+                    "mode": "rw",
+                }
+            },
+            working_dir=workspace_in_sandbox,
             remove=False,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
@@ -112,7 +126,7 @@ def run_code(
         except Exception as e:
             logger.warning("Failed to remove sandbox container: %s", e)
 
-        outputs_dir = workspace / "outputs"
+        outputs_dir = workspace_in_core / "outputs"
         artifacts = sorted(p for p in outputs_dir.rglob("*") if p.is_file())
 
         return SandboxResult(
@@ -129,13 +143,12 @@ def run_code(
             exit_code=e.exit_status,
             stdout="",
             stderr=str(e),
-            outputs_dir=workspace / "outputs",
+            outputs_dir=workspace_in_core / "outputs",
             timed_out=False,
         )
     finally:
         if not keep_workspace:
-            # Mantém só em erro de debug se o chamador pedir.
             try:
-                shutil.rmtree(workspace, ignore_errors=True)
+                shutil.rmtree(workspace_in_core, ignore_errors=True)
             except Exception:
                 pass

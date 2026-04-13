@@ -1,352 +1,222 @@
-# DS-Agents — Arquitetura e Especificação
+# Architecture
 
-## Visão geral
-
-Sistema multiagente de ciência de dados usando LLMs. O objetivo é ter uma "equipe virtual" de data science que recebe um problema, planeja, executa código, valida resultados e gera relatórios — com aprovação humana em pontos críticos.
-
-O sistema precisa ser **100% Docker**, portável entre o MacBook de desenvolvimento e qualquer servidor Linux (DigitalOcean, AWS, etc.).
-
-O dono do projeto é um data scientist experiente que já tem 2 projetos fechados esperando essa infraestrutura. O sistema precisa funcionar de verdade, não é experimento acadêmico.
+Deep technical specification for Cortex. For a high-level overview, installation and usage, see [README.md](./README.md).
 
 ---
 
-## Stack tecnológica
+## 1. Design principles
 
-| Componente | Tecnologia | Papel |
-|---|---|---|
-| Orquestração de agentes | **LangGraph** (Python) | Cérebro do sistema — grafo de estados, checkpoints, human-in-the-loop |
-| LLM | **Claude API** (Sonnet para tarefas rotineiras, Opus para decisões complexas) | Inteligência dos agentes |
-| Banco de dados | **PostgreSQL 16 + pgvector** | Estado dos projetos, runs, tasks, logs, metadados, e futuramente embeddings |
-| Armazenamento de artefatos | **MinIO** (compatível com S3) | Datasets, modelos, relatórios, notebooks, plots |
-| Orquestrador de jobs | **Kestra** | Agendamento, execução de pipelines, retries, logs operacionais |
-| Execução de código | **Container sandbox efêmero** | Roda código Python/R gerado pelos agentes de forma isolada e segura |
-| Reverse proxy | **Nginx** | Expõe interfaces (API, Kestra UI) |
-| API do sistema | **FastAPI** | Endpoint para submeter projetos, aprovar etapas, consultar status |
+1. **Run-anywhere via Docker.** The same `docker compose up` works on a developer Mac (arm64, Docker Desktop) and on a Linux server (amd64, Docker Engine). No platform-specific paths, no host bind mounts for data flow, multi-arch images only.
+2. **Client data never leaves local volumes.** Datasets, models and reports live in Postgres/MinIO volumes. `.env` is gitignored; each environment holds its own secrets.
+3. **Human-in-the-loop at risky steps.** The plan and the final training step pause for explicit human approval.
+4. **Independent review.** The Reviewer agent runs with an adversarial prompt and never shares context with the agent that produced the work.
+5. **Sandboxed execution.** All generated code runs in an ephemeral, network-less, capability-dropped container with hard mem/cpu/time caps.
 
 ---
 
-## Arquitetura de containers (Docker Compose)
+## 2. Container topology
 
 ```
 docker-compose.yml
-│
-├── agent-core        → App Python (LangGraph + FastAPI)
-├── postgres           → PostgreSQL 16 com pgvector
-├── minio              → Object storage S3-compatible
-├── kestra             → Orquestrador de workflows
-├── sandbox            → Container efêmero para execução de código (profile: tools)
-└── nginx              → Reverse proxy
+├── agent-core   FastAPI + LangGraph; mounts /var/run/docker.sock to spawn sandboxes
+├── postgres     PostgreSQL 16 + pgvector (state, checkpoints, future embeddings)
+├── minio        S3-compatible object storage
+├── kestra       workflow orchestrator (scheduling, retries, ops)
+├── nginx        reverse proxy → /api/, /kestra/
+└── sandbox      built with profile "tools"; spawned on-demand, not long-running
 ```
 
-### Regras importantes
+The `sandbox` service exists in the compose file only so the image is built alongside the stack. It is never `up`-ed — `agent-core` spawns instances of it per execution and removes them when done.
 
-- **Tudo roda via `docker compose up`** — tanto no Mac (dev) quanto no servidor (prod).
-- O `.env` fica fora do Git (`.gitignore`). Cada ambiente tem seu próprio `.env`.
-- Dados de clientes **nunca** vão para o GitHub. Ficam nos volumes Docker (MinIO/Postgres).
-- O container `sandbox` **não fica rodando**. O `agent-core` o spawna sob demanda para executar código e depois mata.
-- O `agent-core` precisa de acesso ao Docker socket para spawnar containers sandbox.
+### Sandbox handoff (portability-critical)
+
+Because `agent-core` talks to the host Docker daemon, any bind mount it declares is interpreted in the **host** filesystem, not in `agent-core`'s own filesystem. To avoid platform-specific paths:
+
+- A named volume `cortex_sandbox_tmp` is declared with a fixed external name.
+- `agent-core` mounts it at `/tmp/sandbox` and writes each run's workspace under `/tmp/sandbox/<run_id>/`.
+- When spawning the sandbox, the same named volume is mounted at `/sandbox_root`, and `working_dir=/sandbox_root/<run_id>` points the container to its workspace.
+
+This works identically on Mac and Linux because named volumes are resolved by the daemon, not by paths.
 
 ---
 
-## Estrutura de pastas
+## 3. Agents
 
-```
-ds-agents/
-├── docker-compose.yml
-├── .env.example                 # Template das variáveis (sem secrets)
-├── .gitignore
-├── README.md
-├── ARCHITECTURE.md              # Este documento
-│
-├── agent-core/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── src/
-│       ├── main.py              # FastAPI app
-│       ├── config.py            # Settings (pydantic-settings, lê do .env)
-│       ├── graph/
-│       │   ├── state.py         # Definição do estado do grafo LangGraph
-│       │   ├── builder.py       # Construção do grafo (nós, edges, checkpoints)
-│       │   └── nodes.py         # Funções de cada nó do grafo
-│       ├── agents/
-│       │   ├── orchestrator.py  # Prompt + tools do Orchestrator
-│       │   ├── analyst.py       # Prompt + tools do Data Analyst
-│       │   ├── modeler.py       # Prompt + tools do Modeler
-│       │   └── reviewer.py      # Prompt + tools do Reviewer
-│       ├── sandbox/
-│       │   ├── runner.py        # Lógica de spawn do container efêmero
-│       │   └── docker_client.py # Interface com Docker SDK
-│       ├── storage/
-│       │   ├── postgres.py      # Interface com PostgreSQL (asyncpg ou sqlalchemy)
-│       │   └── minio_client.py  # Interface com MinIO (boto3)
-│       └── api/
-│           ├── routes.py        # Endpoints FastAPI
-│           └── schemas.py       # Pydantic models para request/response
-│
-├── sandbox/
-│   ├── Dockerfile               # Python 3.11 + R + libs de data science
-│   └── entrypoint.sh            # Recebe script, executa, retorna resultado
-│
-├── kestra/
-│   └── flows/                   # Workflows YAML do Kestra
-│       └── example-pipeline.yml
-│
-├── nginx/
-│   └── nginx.conf
-│
-└── scripts/
-    ├── init-db.sql              # Schema inicial do PostgreSQL
-    └── backup.sh                # Script de backup (pg_dump + minio sync)
-```
+Each agent is defined by a system prompt + a Python entry function. No shared state across agents — communication goes through the graph state, which acts as the single source of truth for the run.
+
+### 3.1 Orchestrator (Project Manager)
+
+- **Role:** reads the brief, produces a staged plan, decides which agent runs next, compiles the final report.
+- **Actions:** `plan`, `decide_next`, `compile_report`.
+- **Model:** Claude Opus (complex reasoning).
+- **Human checkpoints:** initial plan approval.
+
+### 3.2 Data Analyst
+
+- **Role:** EDA, data quality alerts, hypotheses, descriptive statistics, visualizations.
+- **Execution:** generates Python code → runs in sandbox → reads `outputs/summary.json` and plot files.
+- **Model:** Claude Sonnet.
+
+### 3.3 Modeler
+
+- **Role:** feature engineering, baselines, model comparison, selection.
+- **Execution:** generates Python code → runs in sandbox → reads `outputs/metrics.json`, `leaderboard.csv`, `model.pkl`.
+- **Model:** Claude Opus.
+- **Human checkpoints:** before final/large-scale training.
+
+### 3.4 Reviewer (Critic)
+
+- **Role:** audits everything produced so far. Adversarial prompt focused on data leakage, improper splits, metric misuse, bias, unsupported claims.
+- **Execution:** no code, JSON verdict only (`approved` or `rejected` with structured issues list).
+- **Model:** Claude Opus.
+- **Loop guard:** on `rejected`, control flows back to Modeler; after `MAX_REVIEW_LOOPS` (default 2) the run is forced to report to avoid infinite loops.
 
 ---
 
-## Agentes — definição e responsabilidades
-
-### 1. Orchestrator (Project Manager)
-
-**Papel:** Recebe o briefing do projeto, cria plano de trabalho, gerencia o estado, decide qual agente chamar, compila resultado final.
-
-**Inputs:** Descrição do problema, dados disponíveis, restrições.
-
-**Outputs:** Plano de etapas, delegação de tarefas, relatório final consolidado.
-
-**Quando chama humano:** Aprovação do plano inicial, decisões estratégicas ambíguas.
-
-### 2. Data Analyst
-
-**Papel:** Inspeciona dados, faz EDA, gera hipóteses, produz visualizações e estatísticas descritivas.
-
-**Inputs:** Dataset (caminho no MinIO), perguntas do Orchestrator.
-
-**Outputs:** Relatório de EDA, plots (salvos no MinIO), hipóteses, alertas sobre qualidade dos dados.
-
-**Execução:** Gera código Python/R → executa no sandbox → coleta resultado.
-
-### 3. Modeler
-
-**Papel:** Feature engineering, treinamento de modelos, comparação de métricas, seleção do melhor modelo.
-
-**Inputs:** Dados preparados, hipóteses do Analyst, critérios de sucesso.
-
-**Outputs:** Modelos treinados (salvos no MinIO), tabela comparativa de métricas, justificativa da escolha.
-
-**Quando chama humano:** Antes de treinar modelo final / em larga escala.
-
-### 4. Reviewer (Crítico)
-
-**Papel:** Audita o trabalho dos outros agentes. Procura data leakage, erros metodológicos, splits problemáticos, métricas inadequadas, viés.
-
-**Inputs:** Artefatos e relatórios dos outros agentes.
-
-**Outputs:** Parecer de aprovação ou lista de problemas encontrados. Se reprova, o fluxo volta para o agente responsável.
-
-**Regra:** O Reviewer NUNCA é o mesmo "cérebro" que produziu o trabalho. Ele recebe o output e avalia com prompt independente, focado em encontrar problemas.
-
----
-
-## Fluxo de um projeto (grafo LangGraph)
+## 4. LangGraph graph
 
 ```
-[INÍCIO]
-    │
-    ▼
-[Orchestrator] ──── gera plano ────► [HUMAN APPROVAL]
-    │                                       │
-    │◄──────── aprovado ───────────────────┘
-    │
-    ▼
-[Data Analyst] ──── EDA ────► resultados
-    │
-    ▼
-[Orchestrator] ──── avalia EDA, decide próximo passo
-    │
-    ▼
-[Modeler] ──── feature eng + treino ────► [HUMAN APPROVAL]
-    │                                            │
-    │◄──────── aprovado ────────────────────────┘
-    │
-    ▼
-[Reviewer] ──── audita tudo
-    │
-    ├── aprovado ────► [Orchestrator] ──── gera relatório final ────► [FIM]
-    │
-    └── reprovado ───► volta para o agente responsável (loop)
+START ─► plan ─► eda ─► decide_next ─► modeling ─► review ─┬─► report ─► END
+                                              ▲            │
+                                              └── rejected ┘
 ```
 
-### Estados do grafo (LangGraph State)
+### 4.1 State
 
-```python
-class ProjectState(TypedDict):
-    project_id: str
-    description: str
-    plan: dict                    # plano gerado pelo Orchestrator
-    current_phase: str            # "planning", "eda", "modeling", "review", "reporting"
-    datasets: list[str]           # caminhos no MinIO
-    eda_results: dict             # output do Data Analyst
-    model_results: dict           # output do Modeler
-    review_results: dict          # output do Reviewer
-    human_decisions: list[dict]   # log de aprovações/rejeições humanas
-    messages: list                # histórico de mensagens entre agentes
-    artifacts: list[str]          # caminhos de artefatos gerados (MinIO)
-    status: str                   # "active", "waiting_human", "completed", "failed"
+Defined in `agent-core/src/graph/state.py` as a `TypedDict`. Key fields:
+
+| Field | Purpose |
+|---|---|
+| `project_id`, `run_id` | Identity |
+| `description`, `datasets` | Input |
+| `plan` | Output of the Orchestrator's `plan` action |
+| `current_phase` | `planning` / `eda` / `modeling` / `review` / `reporting` / `done` |
+| `eda_results`, `model_results`, `review_results`, `final_report` | Per-stage artifacts |
+| `human_decisions` | Approval/rejection log |
+| `status` | `active` / `waiting_human` / `completed` / `failed` |
+| `review_loop_count` | Bounded retry counter |
+
+### 4.2 Interruptions
+
+`interrupt_after=["plan", "modeling"]` — the graph pauses after those nodes and is resumed via the `POST /v1/decisions` endpoint. State is persisted by a Postgres checkpointer keyed on `thread_id = run_id`, so a resumed run picks up exactly where it was paused, even after a container restart.
+
+---
+
+## 5. Sandbox execution contract
+
+Each sandbox invocation receives a workspace directory (named-volume subpath) containing:
+
+```
+<workspace>/
+├── script.py | script.R | notebook.ipynb    # generated code
+├── inputs/                                   # input data
+├── outputs/                                  # populated by the script
+└── meta.json                                 # optional metadata
 ```
 
----
+The entrypoint runs the appropriate interpreter from the current working directory. Scripts are expected to write structured outputs the agent layer can consume:
 
-## Sandbox de execução de código — CRÍTICO
+- Analyst → `outputs/summary.json`, plot files.
+- Modeler → `outputs/metrics.json`, `outputs/leaderboard.csv`, `outputs/model.pkl`.
 
-O sandbox é o componente mais importante de segurança do sistema.
+### Hard limits (all enforceable via Docker SDK)
 
-### Regras
-
-- **Container efêmero**: spawna, executa, retorna resultado, morre.
-- **Sem acesso à rede**: `network_mode: none` no Docker.
-- **Timeout**: máximo 5 minutos por execução (configurável).
-- **Limites de memória**: 2 GB por execução (configurável).
-- **Sem acesso ao host**: sem bind mounts ao filesystem do host.
-- **Comunicação**: o agent-core passa o script + dados via volume temporário, o sandbox executa e escreve o resultado no mesmo volume.
-
-### Dockerfile do sandbox
-
-Deve incluir:
-- Python 3.11 com: pandas, numpy, scikit-learn, matplotlib, seaborn, plotly, statsmodels, xgboost, lightgbm, scipy, category_encoders
-- R com: tidyverse, caret, data.table, ggplot2
-- Jupyter (para execução de notebooks via papermill, se necessário)
-
-### Fluxo de execução
-
-1. Agent gera código
-2. `agent-core` cria volume temporário, escreve script + dados
-3. Spawna container sandbox com esse volume montado
-4. Sandbox executa, escreve output (resultados, plots, logs) no volume
-5. `agent-core` lê o output
-6. Container sandbox é removido
-7. Volume temporário é limpo
+| Control | Default |
+|---|---|
+| Network | `none` |
+| Memory | 2 GB |
+| CPU | 2 cores |
+| PIDs | 256 |
+| Capabilities | all dropped |
+| Privileges | `no-new-privileges:true` |
+| Timeout | 300 s |
 
 ---
 
-## Schema do PostgreSQL
+## 6. Database schema
 
-### Tabelas principais
+`scripts/init-db.sql` creates the schema on first boot. Tables:
 
-**projects** — um registro por projeto de data science
-- id (UUID), name, description, status, created_at, updated_at, config (JSONB)
+| Table | Purpose |
+|---|---|
+| `projects` | One row per DS project. Config stored as JSONB. |
+| `runs` | One row per graph execution. |
+| `tasks` | One row per agent call within a run. Stores I/O, tokens, cost estimate. |
+| `artifacts` | Pointers to objects in MinIO (datasets, models, reports, plots). |
+| `human_decisions` | Approval/rejection log, joined to runs/tasks. |
+| `agent_logs` | Per-LLM-call telemetry (model, tokens in/out, latency). |
+| `memory_embeddings` | `vector(1536)` column prepared for semantic memory (not yet populated). |
 
-**runs** — cada execução do grafo para um projeto
-- id (UUID), project_id (FK), started_at, finished_at, status, final_state (JSONB)
-
-**tasks** — cada tarefa delegada a um agente dentro de um run
-- id (UUID), run_id (FK), agent_name, phase, input (JSONB), output (JSONB), status, started_at, finished_at, tokens_used, cost_estimate
-
-**artifacts** — referência a arquivos no MinIO
-- id (UUID), task_id (FK), project_id (FK), artifact_type (dataset/model/plot/report), minio_path, metadata (JSONB), created_at
-
-**human_decisions** — log de aprovações/rejeições
-- id (UUID), run_id (FK), task_id (FK), decision (approved/rejected), comments, decided_at
-
-**agent_logs** — log detalhado de cada chamada LLM
-- id (UUID), task_id (FK), agent_name, prompt_hash, model_used, tokens_in, tokens_out, latency_ms, created_at
+LangGraph's own checkpoint tables are created at startup by `PostgresSaver.setup()` in the same database.
 
 ---
 
-## Variáveis de ambiente (.env)
+## 7. API surface
 
-```env
-# LLM
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...           # opcional, backup
+Base path: `/v1` (proxied under `/api/` by Nginx).
 
-# Postgres
-PG_PASSWORD=sua_senha_segura
-PG_HOST=postgres
-PG_PORT=5432
-PG_DB=dsagents
-PG_USER=dsagents
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/projects` | Create a project |
+| `GET` | `/projects/{id}` | Fetch project |
+| `POST` | `/runs` | Start a run (runs the graph in a FastAPI BackgroundTask) |
+| `GET` | `/runs/{id}` | Fetch DB row |
+| `GET` | `/runs/{id}/state` | Live state snapshot from the checkpointer |
+| `POST` | `/decisions` | Record approval/rejection; resumes the run |
+| `GET` | `/health` | Liveness |
 
-# MinIO
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=sua_senha_segura
-MINIO_ENDPOINT=minio:9000
+---
 
-# Kestra
-KESTRA_DB_URL=jdbc:postgresql://postgres:5432/dsagents
+## 8. Environment variables
 
-# Sandbox
-SANDBOX_TIMEOUT_SECONDS=300
-SANDBOX_MEMORY_LIMIT=2g
-SANDBOX_IMAGE=ds-agents-sandbox:latest
+Populate `.env` from `.env.example`. Non-obvious entries:
 
-# Geral
-ENVIRONMENT=development         # development | production
-LOG_LEVEL=INFO
+| Variable | Notes |
+|---|---|
+| `CLAUDE_MODEL_ROUTINE` / `CLAUDE_MODEL_COMPLEX` | Split routine vs. high-stakes calls between Sonnet and Opus. |
+| `SANDBOX_SHARED_VOLUME` | Named Docker volume shared by agent-core and sandboxes. Do not change casually. |
+| `SANDBOX_SHARED_MOUNT` | Where that volume is mounted inside agent-core (`/tmp/sandbox`). |
+| `SANDBOX_TIMEOUT_SECONDS` / `SANDBOX_MEMORY_LIMIT` / `SANDBOX_CPU_LIMIT` | Per-execution hard caps. |
+
+---
+
+## 9. Operations
+
+### Development loop (Mac)
+
+```
+docker compose --profile tools build sandbox   # once
+docker compose up -d --build
+docker compose logs -f agent-core
 ```
 
----
+### Production update
 
-## Logística de desenvolvimento → produção
-
-### No Mac (desenvolvimento)
-1. Clonar repo do GitHub
-2. Criar `.env` baseado no `.env.example`
-3. `docker compose up`
-4. Desenvolver, testar, iterar
-5. `git push`
-
-### No servidor (produção)
-1. `git clone` do repo
-2. Criar `.env` com keys de produção
-3. `docker compose up -d`
-4. Configurar backup automatizado (cron + `scripts/backup.sh`)
-
-### Para atualizar produção
-```bash
+```
 git pull
 docker compose up -d --build
 ```
 
----
+### Backups
 
-## Infra recomendada
+`scripts/backup.sh` is a placeholder for `pg_dump` + MinIO sync against a mounted backup target. Intended to run from cron on the host.
 
-### Desenvolvimento
-- MacBook Pro M1 16 GB (suficiente, stack consome ~4-6 GB RAM)
-- Docker Desktop
+### Cost envelope (early)
 
-### Produção (início)
-- DigitalOcean Droplet: 4 vCPU, 8 GB RAM, 160 GB SSD (~US$48/mês)
-- Custo API Claude: ~US$30-80/mês para 2 projetos
-- Total estimado: ~US$80-130/mês
-
-### Produção (escala)
-- AWS EC2/ECS se virar produto B2B
-- GPU somente se rodar modelos open source locais
+- Infra: DigitalOcean droplet ~US$48/mo.
+- Claude API: ~US$30–80/mo for two active projects.
+- Total: ~US$80–130/mo.
 
 ---
 
-## Evolução futura (NÃO implementar agora)
+## 10. Roadmap
 
-- [ ] Memória semântica com pgvector (extensão já instalada, indexar quando tiver histórico)
-- [ ] Templates de relatório sofisticados
-- [ ] Interface web (Dify, Open WebUI, ou React)
-- [ ] Integrações com Telegram/WhatsApp (OpenClaw)
-- [ ] Mais agentes especializados conforme demanda
-- [ ] Observabilidade (LangSmith ou similar)
-- [ ] Modelos open source locais
+Deliberately out of scope for v1; revisit when there is real usage:
 
----
-
-## Como usar este documento
-
-1. Crie o repo `ds-agents` no GitHub
-2. Clone no Mac
-3. Coloque este arquivo como `ARCHITECTURE.md` na raiz
-4. Abra o Claude Code ou Claude no VS Code
-5. Peça: **"Leia o ARCHITECTURE.md e implemente o projeto completo seguindo a especificação."**
-6. Revise o código gerado
-7. `docker compose up` para testar
-8. Itere até funcionar
-
----
-
-*Documento gerado em sessão de planejamento. Abril 2026.*
+- Populate `memory_embeddings` from prior runs and wire semantic retrieval.
+- Richer report templates (Markdown/HTML/PDF).
+- Web UI (Dify, Open WebUI, or custom React).
+- Messaging integrations (Telegram, WhatsApp).
+- Additional specialized agents (e.g. causal inference, time series).
+- Observability (LangSmith or similar).
+- Local open-source models as a fallback.

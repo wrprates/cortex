@@ -1,7 +1,8 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from ..services import runs as runs_service
 from ..storage import postgres as db
 from .schemas import (
     HumanDecisionIn,
@@ -30,12 +31,20 @@ async def get_project(project_id: UUID) -> ProjectOut:
 
 
 @router.post("/runs", response_model=RunOut, status_code=201)
-async def start_run(payload: RunStart) -> RunOut:
+async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
     project = await db.fetch_project(payload.project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
+
     row = await db.insert_run(payload.project_id)
-    # TODO (Fase 6): enfileirar execução do grafo LangGraph
+
+    background.add_task(
+        runs_service.start_run,
+        run_id=row["id"],
+        project_id=payload.project_id,
+        description=project["description"] or "",
+        datasets=payload.datasets,
+    )
     return RunOut(**row)
 
 
@@ -47,11 +56,28 @@ async def get_run(run_id: UUID) -> RunOut:
     return RunOut(**row)
 
 
+@router.get("/runs/{run_id}/state")
+async def get_run_state(run_id: UUID) -> dict:
+    state = runs_service.get_run_state(run_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="run state not found")
+    return state
+
+
 @router.post("/decisions", response_model=HumanDecisionOut, status_code=201)
-async def record_decision(payload: HumanDecisionIn) -> HumanDecisionOut:
+async def record_decision(
+    payload: HumanDecisionIn, background: BackgroundTasks
+) -> HumanDecisionOut:
     if payload.decision not in {"approved", "rejected"}:
         raise HTTPException(status_code=400, detail="decision must be approved|rejected")
+
     row = await db.insert_human_decision(
         payload.run_id, payload.task_id, payload.decision, payload.comments
+    )
+    background.add_task(
+        runs_service.resume_run,
+        run_id=payload.run_id,
+        decision=payload.decision,
+        comments=payload.comments,
     )
     return HumanDecisionOut(**row)

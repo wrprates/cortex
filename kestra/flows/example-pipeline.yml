@@ -1,0 +1,42 @@
+id: example-ds-project
+namespace: cortex.examples
+description: |
+  Exemplo de pipeline que dispara um run do Cortex via API e aguarda conclusão.
+  Útil para agendar execuções periódicas ou encadear etapas externas.
+
+inputs:
+  - id: project_id
+    type: STRING
+    required: true
+  - id: datasets
+    type: JSON
+    defaults: []
+
+tasks:
+  - id: start-run
+    type: io.kestra.plugin.core.http.Request
+    uri: "http://agent-core:8000/v1/runs"
+    method: POST
+    contentType: application/json
+    body: |
+      {
+        "project_id": "{{ inputs.project_id }}",
+        "datasets": {{ inputs.datasets }}
+      }
+
+  - id: extract-run-id
+    type: io.kestra.plugin.core.debug.Return
+    format: "{{ outputs['start-run'].body.id }}"
+
+  - id: wait-for-human-approval
+    type: io.kestra.plugin.core.flow.Pause
+    description: |
+      Pausa o fluxo até operador aprovar plano via API:
+      POST /v1/decisions { run_id, decision: "approved" }
+
+  - id: poll-final-state
+    type: io.kestra.plugin.core.http.Request
+    uri: "http://agent-core:8000/v1/runs/{{ outputs['extract-run-id'].value }}/state"
+    method: GET
+
+triggers: []

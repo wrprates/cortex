@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     sandbox_memory_limit: str = Field(default="2g", alias="SANDBOX_MEMORY_LIMIT")
     sandbox_cpu_limit: float = Field(default=2.0, alias="SANDBOX_CPU_LIMIT")
     sandbox_image: str = Field(default="ds-agents-sandbox:latest", alias="SANDBOX_IMAGE")
+    sandbox_shared_volume: str = Field(default="cortex_sandbox_tmp", alias="SANDBOX_SHARED_VOLUME")
+    sandbox_shared_mount: str = Field(default="/tmp/sandbox", alias="SANDBOX_SHARED_MOUNT")
 
     @property
     def postgres_dsn(self) -> str:
