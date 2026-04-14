@@ -5,12 +5,33 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive
 
+# Dependências de sistema (R, tidyverse deps, Quarto deps)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         r-base r-base-dev \
         libpq-dev \
         ca-certificates \
+        curl \
+        # Dependências para tidyverse/R packages
+        libxml2-dev \
+        libcurl4-openssl-dev \
+        libssl-dev \
+        libfontconfig1-dev \
+        libfreetype6-dev \
+        libpng-dev \
+        libtiff5-dev \
+        libjpeg-dev \
+        libharfbuzz-dev \
+        libfribidi-dev \
+        libgit2-dev \
+        # Dependências para Quarto/Pandoc
+        pandoc \
     && rm -rf /var/lib/apt/lists/*
+
+# Instalar Quarto
+RUN curl -LO https://quarto.org/download/latest/quarto-linux-amd64.deb \
+    && dpkg -i quarto-linux-amd64.deb \
+    && rm quarto-linux-amd64.deb
 
 # Python DS stack
 RUN pip install --upgrade pip && pip install \
@@ -30,8 +51,21 @@ RUN pip install --upgrade pip && pip install \
         pyarrow==17.0.0 \
         openpyxl==3.1.5
 
-# R packages (subset minimal; o resto instalável on-demand)
-RUN R -e "install.packages(c('tidyverse','data.table','ggplot2','caret'), repos='https://cloud.r-project.org')" || true
+# R packages (tidyverse stack + visualização + quarto)
+RUN R -e "install.packages(c(\
+    'tidyverse', \
+    'data.table', \
+    'ggplot2', \
+    'echarts4r', \
+    'plotly', \
+    'DT', \
+    'jsonlite', \
+    'rmarkdown', \
+    'quarto', \
+    'tidymodels', \
+    'ranger', \
+    'xgboost' \
+), repos='https://cloud.r-project.org', Ncpus=4)"
 
 # Usuário não-root para rodar código gerado
 RUN useradd -m -u 1000 sandbox

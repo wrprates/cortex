@@ -2,15 +2,28 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;
 
-CREATE TABLE IF NOT EXISTS projects (
+-- Tabela de clientes (1 repo GitHub por cliente)
+CREATE TABLE IF NOT EXISTS clients (
     id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name        TEXT NOT NULL,
-    description TEXT,
-    status      TEXT NOT NULL DEFAULT 'active',
+    name        TEXT NOT NULL UNIQUE,
+    github_repo TEXT,
     config      JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS projects (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    client_id        UUID REFERENCES clients(id) ON DELETE SET NULL,
+    name             TEXT NOT NULL,
+    description      TEXT,
+    workflow_type    TEXT NOT NULL DEFAULT 'full_ml',  -- data_quality | eda_hypothesis | full_ml
+    primary_language TEXT NOT NULL DEFAULT 'r',        -- r | python
+    status           TEXT NOT NULL DEFAULT 'active',
+    config           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
 
 CREATE TABLE IF NOT EXISTS runs (
     id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

@@ -20,7 +20,15 @@ def _config(run_id: UUID) -> dict:
     return {"configurable": {"thread_id": str(run_id)}}
 
 
-def start_run(run_id: UUID, project_id: UUID, description: str, datasets: list[str]) -> dict:
+def start_run(
+    run_id: UUID,
+    project_id: UUID,
+    description: str,
+    datasets: list[str],
+    workflow_type: str = "full_ml",
+    primary_language: str = "r",
+    client_id: str | None = None,
+) -> dict:
     """Dispara o grafo até a primeira interrupção (human approval do plano)."""
     graph = _graph()
     initial: ProjectState = {
@@ -28,6 +36,9 @@ def start_run(run_id: UUID, project_id: UUID, description: str, datasets: list[s
         "run_id": str(run_id),
         "description": description,
         "datasets": datasets,
+        "workflow_type": workflow_type,
+        "primary_language": primary_language,
+        "client_id": client_id or "",
         "status": "active",
         "review_loop_count": 0,
     }

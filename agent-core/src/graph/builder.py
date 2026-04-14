@@ -9,9 +9,12 @@ from .state import ProjectState
 
 def build_graph(checkpointer=None, *, use_postgres: bool = True):
     """
-    Constrói o grafo LangGraph com human-in-the-loop em dois pontos:
-    - após 'plan' (aprovação do plano inicial)
-    - após 'modeling' (antes da revisão/treino final)
+    Constrói o grafo LangGraph com human-in-the-loop e suporte a workflows parciais.
+
+    Workflows:
+    - data_quality: plan → eda → report (sem modelagem)
+    - eda_hypothesis: plan → eda → report (com testes de hipóteses, sem modelagem)
+    - full_ml: plan → eda → decide_next → modeling → review → report
 
     interrupt_after força o grafo a pausar; o run é retomado via API após a decisão humana.
     """
@@ -26,7 +29,14 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
 
     g.add_edge(START, "plan")
     g.add_edge("plan", "eda")
-    g.add_edge("eda", "decide_next")
+
+    # Roteamento condicional após EDA baseado em workflow_type
+    g.add_conditional_edges(
+        "eda",
+        nodes.route_after_eda,
+        {"decide_next": "decide_next", "report": "report"},
+    )
+
     g.add_edge("decide_next", "modeling")
     g.add_edge("modeling", "review")
 

@@ -19,7 +19,11 @@ elif [[ -f "script.R" ]]; then
     exec Rscript script.R
 elif [[ -f "notebook.ipynb" ]]; then
     exec papermill notebook.ipynb outputs/executed.ipynb
+elif [[ -f "report.qmd" ]]; then
+    exec quarto render report.qmd --output-dir outputs
+elif [[ -f "report.Rmd" ]]; then
+    exec Rscript -e "rmarkdown::render('report.Rmd', output_dir='outputs')"
 else
-    echo "ERROR: nenhum script.py, script.R ou notebook.ipynb encontrado em $PWD" >&2
+    echo "ERROR: nenhum script.py, script.R, notebook.ipynb, report.qmd ou report.Rmd encontrado em $PWD" >&2
     exit 2
 fi

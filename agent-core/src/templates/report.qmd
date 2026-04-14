@@ -1,0 +1,185 @@
+---
+title: "{{title}}"
+subtitle: "{{subtitle}}"
+date: "{{date}}"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Mostrar código"
+    theme: cosmo
+    self-contained: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(echarts4r)
+library(DT)
+library(jsonlite)
+
+# Carregar dados do sumário
+summary_data <- fromJSON("inputs/summary.json")
+```
+
+## Resumo Executivo
+
+{{executive_summary}}
+
+## 1. Visão Geral dos Dados
+
+### 1.1 Estrutura do Dataset
+
+```{r data-structure}
+# Exibir estrutura se disponível
+if (!is.null(summary_data$structure)) {
+  structure_df <- as.data.frame(summary_data$structure)
+  datatable(structure_df, options = list(pageLength = 10))
+}
+```
+
+### 1.2 Estatísticas Descritivas
+
+```{r descriptive-stats}
+if (!is.null(summary_data$descriptive_stats)) {
+  stats_df <- as.data.frame(summary_data$descriptive_stats)
+  datatable(stats_df, options = list(pageLength = 10, scrollX = TRUE))
+}
+```
+
+## 2. Qualidade dos Dados
+
+### 2.1 Valores Ausentes
+
+```{r missing-values}
+if (!is.null(summary_data$missing_values)) {
+  missing_df <- data.frame(
+    coluna = names(summary_data$missing_values),
+    missing = unlist(summary_data$missing_values)
+  ) %>%
+    filter(missing > 0) %>%
+    arrange(desc(missing))
+
+  if (nrow(missing_df) > 0) {
+    missing_df %>%
+      e_charts(coluna) %>%
+      e_bar(missing, name = "Valores Ausentes") %>%
+      e_flip_coords() %>%
+      e_tooltip() %>%
+      e_title("Valores Ausentes por Coluna") %>%
+      e_theme("westeros")
+  } else {
+    cat("Nenhum valor ausente encontrado.")
+  }
+}
+```
+
+### 2.2 Alertas de Qualidade
+
+{{quality_alerts}}
+
+## 3. Análise Exploratória
+
+### 3.1 Distribuições
+
+```{r distributions}
+# Gráficos de distribuição serão inseridos aqui
+if (!is.null(summary_data$distributions)) {
+  for (var_name in names(summary_data$distributions)) {
+    dist_data <- summary_data$distributions[[var_name]]
+    # Renderizar gráfico apropriado
+  }
+}
+```
+
+### 3.2 Correlações
+
+```{r correlations}
+if (!is.null(summary_data$correlations)) {
+  cor_matrix <- as.data.frame(summary_data$correlations)
+
+  cor_matrix %>%
+    e_charts() %>%
+    e_heatmap(x = "var1", y = "var2", z = "correlation") %>%
+    e_visual_map(min = -1, max = 1) %>%
+    e_title("Matriz de Correlação") %>%
+    e_theme("westeros")
+}
+```
+
+{{#if has_hypothesis_tests}}
+## 4. Testes de Hipóteses
+
+### 4.1 Resultados dos Testes
+
+```{r hypothesis-tests}
+if (!is.null(summary_data$hypothesis_tests)) {
+  tests_df <- as.data.frame(summary_data$hypothesis_tests)
+  datatable(tests_df, options = list(pageLength = 10))
+}
+```
+
+### 4.2 Interpretação
+
+{{hypothesis_interpretation}}
+{{/if}}
+
+{{#if has_modeling}}
+## 5. Modelagem
+
+### 5.1 Comparativo de Modelos
+
+```{r model-comparison}
+if (!is.null(summary_data$model_results)) {
+  models_df <- as.data.frame(summary_data$model_results$leaderboard)
+
+  models_df %>%
+    e_charts(model) %>%
+    e_bar(metric_value, name = "Performance") %>%
+    e_flip_coords() %>%
+    e_tooltip() %>%
+    e_title("Comparativo de Modelos") %>%
+    e_theme("westeros")
+}
+```
+
+### 5.2 Métricas do Modelo Selecionado
+
+```{r selected-model}
+if (!is.null(summary_data$model_results$best_model)) {
+  best <- summary_data$model_results$best_model
+  cat(sprintf("**Modelo:** %s\n\n", best$name))
+  cat(sprintf("**Métrica Principal:** %s = %.4f\n\n", best$metric_name, best$metric_value))
+}
+```
+
+### 5.3 Importância das Variáveis
+
+```{r feature-importance}
+if (!is.null(summary_data$model_results$feature_importance)) {
+  fi_df <- as.data.frame(summary_data$model_results$feature_importance)
+
+  fi_df %>%
+    arrange(desc(importance)) %>%
+    head(15) %>%
+    e_charts(feature) %>%
+    e_bar(importance, name = "Importância") %>%
+    e_flip_coords() %>%
+    e_tooltip() %>%
+    e_title("Top 15 Variáveis Mais Importantes") %>%
+    e_theme("westeros")
+}
+```
+{{/if}}
+
+## 6. Conclusões e Recomendações
+
+{{conclusions}}
+
+---
+
+*Relatório gerado automaticamente pelo Cortex em {{date}}.*
