@@ -123,10 +123,13 @@ async def record_decision(
     row = await db.insert_human_decision(
         payload.run_id, payload.task_id, payload.decision, payload.comments
     )
-    background.add_task(
-        runs_service.resume_run,
-        run_id=payload.run_id,
-        decision=payload.decision,
-        comments=payload.comments,
-    )
+    threading.Thread(
+        target=runs_service.resume_run,
+        kwargs={
+            "run_id": payload.run_id,
+            "decision": payload.decision,
+            "comments": payload.comments,
+        },
+        daemon=True,
+    ).start()
     return HumanDecisionOut(**row)

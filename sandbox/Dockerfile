@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libharfbuzz-dev \
         libfribidi-dev \
         libgit2-dev \
+        libuv1-dev \
+        libsass-dev \
+        libnode-dev \
         # Dependências para Quarto/Pandoc
         pandoc \
     && rm -rf /var/lib/apt/lists/*
@@ -52,20 +55,12 @@ RUN pip install --upgrade pip && pip install \
         openpyxl==3.1.5
 
 # R packages (tidyverse stack + visualização + quarto)
-RUN R -e "install.packages(c(\
-    'tidyverse', \
-    'data.table', \
-    'ggplot2', \
-    'echarts4r', \
-    'plotly', \
-    'DT', \
-    'jsonlite', \
-    'rmarkdown', \
-    'quarto', \
-    'tidymodels', \
-    'ranger', \
-    'xgboost' \
-), repos='https://cloud.r-project.org', Ncpus=4)"
+# pkgs listados; após install, verifica cada um com require() e aborta se faltar
+RUN R -e "pkgs <- c('tidyverse','data.table','ggplot2','echarts4r','plotly','DT','jsonlite','rmarkdown','quarto','tidymodels','ranger','xgboost','lubridate','htmlwidgets','broom','skimr'); \
+install.packages(pkgs, repos='https://cloud.r-project.org', Ncpus=4); \
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly=TRUE)]; \
+if (length(missing)) stop('R packages missing after install: ', paste(missing, collapse=', ')); \
+cat('all R packages OK:', paste(pkgs, collapse=', '), '\n')"
 
 # Usuário não-root para rodar código gerado
 RUN useradd -m -u 1000 sandbox
