@@ -11,6 +11,11 @@ class ProjectState(TypedDict, total=False):
     description: str
     plan: dict
 
+    # Workflow configuration
+    workflow_type: str  # "data_quality" | "eda_hypothesis" | "full_ml"
+    primary_language: str  # "r" | "python"
+    client_id: str  # UUID do cliente
+
     current_phase: str  # "planning" | "eda" | "modeling" | "review" | "reporting" | "done"
     datasets: list[str]
 

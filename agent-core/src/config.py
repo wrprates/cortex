@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     sandbox_shared_volume: str = Field(default="cortex_sandbox_tmp", alias="SANDBOX_SHARED_VOLUME")
     sandbox_shared_mount: str = Field(default="/tmp/sandbox", alias="SANDBOX_SHARED_MOUNT")
 
+    github_token: str = Field(default="", alias="GITHUB_TOKEN")
+    github_org: str = Field(default="", alias="GITHUB_ORG")
+    primary_language: str = Field(default="r", alias="PRIMARY_LANGUAGE")
+
     @property
     def postgres_dsn(self) -> str:
         return (

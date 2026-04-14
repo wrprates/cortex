@@ -35,17 +35,61 @@ async def session() -> AsyncIterator[AsyncSession]:
         yield s
 
 
-async def insert_project(name: str, description: str | None, config: dict[str, Any]) -> dict:
+async def insert_client(name: str, github_repo: str | None, config: dict[str, Any]) -> dict:
     async with session() as s:
         result = await s.execute(
             text(
                 """
-                INSERT INTO projects (name, description, config)
-                VALUES (:name, :description, CAST(:config AS JSONB))
-                RETURNING id, name, description, status, config, created_at, updated_at
+                INSERT INTO clients (name, github_repo, config)
+                VALUES (:name, :github_repo, CAST(:config AS JSONB))
+                RETURNING id, name, github_repo, config, created_at
                 """
             ),
-            {"name": name, "description": description, "config": _json(config)},
+            {"name": name, "github_repo": github_repo, "config": _json(config)},
+        )
+        row = result.mappings().one()
+        await s.commit()
+        return dict(row)
+
+
+async def fetch_client(client_id: UUID) -> dict | None:
+    async with session() as s:
+        result = await s.execute(
+            text(
+                "SELECT id, name, github_repo, config, created_at "
+                "FROM clients WHERE id = :id"
+            ),
+            {"id": client_id},
+        )
+        row = result.mappings().one_or_none()
+        return dict(row) if row else None
+
+
+async def insert_project(
+    name: str,
+    description: str | None,
+    config: dict[str, Any],
+    client_id: UUID | None = None,
+    workflow_type: str = "full_ml",
+    primary_language: str = "r",
+) -> dict:
+    async with session() as s:
+        result = await s.execute(
+            text(
+                """
+                INSERT INTO projects (name, description, client_id, workflow_type, primary_language, config)
+                VALUES (:name, :description, :client_id, :workflow_type, :primary_language, CAST(:config AS JSONB))
+                RETURNING id, name, description, client_id, workflow_type, primary_language, status, config, created_at, updated_at
+                """
+            ),
+            {
+                "name": name,
+                "description": description,
+                "client_id": client_id,
+                "workflow_type": workflow_type,
+                "primary_language": primary_language,
+                "config": _json(config),
+            },
         )
         row = result.mappings().one()
         await s.commit()
@@ -56,7 +100,7 @@ async def fetch_project(project_id: UUID) -> dict | None:
     async with session() as s:
         result = await s.execute(
             text(
-                "SELECT id, name, description, status, config, created_at, updated_at "
+                "SELECT id, name, description, client_id, workflow_type, primary_language, status, config, created_at, updated_at "
                 "FROM projects WHERE id = :id"
             ),
             {"id": project_id},

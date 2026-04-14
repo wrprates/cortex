@@ -4,7 +4,10 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from ..services import runs as runs_service
 from ..storage import postgres as db
+from ..storage import github_manager
 from .schemas import (
+    ClientCreate,
+    ClientOut,
     HumanDecisionIn,
     HumanDecisionOut,
     ProjectCreate,
@@ -16,9 +19,47 @@ from .schemas import (
 router = APIRouter()
 
 
+@router.post("/clients", response_model=ClientOut, status_code=201)
+async def create_client(payload: ClientCreate) -> ClientOut:
+    row = await db.insert_client(payload.name, payload.github_repo, payload.config)
+    return ClientOut(**row)
+
+
+@router.get("/clients/{client_id}", response_model=ClientOut)
+async def get_client(client_id: UUID) -> ClientOut:
+    row = await db.fetch_client(client_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="client not found")
+    return ClientOut(**row)
+
+
+@router.post("/clients/{client_id}/create-repo")
+async def create_client_repo(client_id: UUID) -> dict:
+    """Cria um repositório GitHub para o cliente."""
+    client = await db.fetch_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="client not found")
+
+    if client.get("github_repo"):
+        return {"status": "exists", "repo": client["github_repo"]}
+
+    repo_url = await github_manager.create_client_repo(client["name"])
+    if repo_url is None:
+        raise HTTPException(status_code=500, detail="failed to create repo")
+
+    return {"status": "created", "repo": repo_url}
+
+
 @router.post("/projects", response_model=ProjectOut, status_code=201)
 async def create_project(payload: ProjectCreate) -> ProjectOut:
-    row = await db.insert_project(payload.name, payload.description, payload.config)
+    row = await db.insert_project(
+        name=payload.name,
+        description=payload.description,
+        config=payload.config,
+        client_id=payload.client_id,
+        workflow_type=payload.workflow_type.value,
+        primary_language=payload.primary_language.value,
+    )
     return ProjectOut(**row)
 
 
@@ -44,6 +85,9 @@ async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
         project_id=payload.project_id,
         description=project["description"] or "",
         datasets=payload.datasets,
+        workflow_type=project.get("workflow_type", "full_ml"),
+        primary_language=project.get("primary_language", "r"),
+        client_id=str(project["client_id"]) if project.get("client_id") else None,
     )
     return RunOut(**row)
 
