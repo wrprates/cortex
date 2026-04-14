@@ -22,7 +22,11 @@ router = APIRouter()
 
 @router.post("/clients", response_model=ClientOut, status_code=201)
 async def create_client(payload: ClientCreate) -> ClientOut:
-    row = await db.insert_client(payload.name, payload.github_repo, payload.config)
+    repo = payload.github_repo
+    if repo is None and payload.auto_create_repo:
+        # Cria repo upfront no GitHub; se falhar, loga mas segue (cliente é criado sem repo)
+        repo = await github_manager.create_client_repo(payload.name)
+    row = await db.insert_client(payload.name, repo, payload.config)
     return ClientOut(**row)
 
 
@@ -78,6 +82,12 @@ async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
 
+    # Resolve github_repo do cliente (evita consulta no node, que roda em thread)
+    github_repo = None
+    if project.get("client_id"):
+        client = await db.fetch_client(project["client_id"])
+        github_repo = (client or {}).get("github_repo")
+
     row = await db.insert_run(payload.project_id)
 
     t = threading.Thread(
@@ -90,6 +100,7 @@ async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
             "workflow_type": project.get("workflow_type", "full_ml"),
             "primary_language": project.get("primary_language", "r"),
             "client_id": str(project["client_id"]) if project.get("client_id") else None,
+            "github_repo": github_repo,
         },
         daemon=True,
     )

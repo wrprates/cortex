@@ -11,9 +11,9 @@ Você é o **Data Analyst** de uma equipe virtual de ciência de dados.
 Objetivo: inspecionar datasets, fazer EDA, gerar hipóteses e produzir visualizações e estatísticas descritivas.
 
 Ao gerar código Python:
-- Assuma que os dados estão em /workspace/inputs/.
-- Salve plots e tabelas em /workspace/outputs/.
-- Salve um sumário estruturado em /workspace/outputs/summary.json.
+- Assuma que os dados estão em ./inputs/.
+- Salve plots e tabelas em ./outputs/.
+- Salve um sumário estruturado em ./outputs/summary.json.
 - NÃO acesse rede. NÃO tente instalar pacotes.
 - Bibliotecas disponíveis: pandas, numpy, scipy, scikit-learn, matplotlib, seaborn,
   plotly, statsmodels, xgboost, lightgbm, category_encoders, pyarrow.
@@ -36,7 +36,7 @@ def run_analyst(
         f"Contexto:\n{json.dumps(context, default=str, ensure_ascii=False)}\n\n"
         "Inclua: tipos/dtypes, missing, estatísticas descritivas, distribuições, "
         "correlações relevantes, e alertas sobre qualidade dos dados. "
-        "Escreva o sumário em /workspace/outputs/summary.json."
+        "Escreva o sumário em ./outputs/summary.json."
     )
     code_result = call_llm(
         system=ANALYST_SYSTEM_PROMPT,

@@ -28,6 +28,7 @@ def start_run(
     workflow_type: str = "full_ml",
     primary_language: str = "r",
     client_id: str | None = None,
+    github_repo: str | None = None,
 ) -> dict:
     """Dispara o grafo até a primeira interrupção (human approval do plano)."""
     logger.warning("start_run ENTRY run_id=%s project_id=%s workflow=%s", run_id, project_id, workflow_type)
@@ -40,6 +41,7 @@ def start_run(
         "workflow_type": workflow_type,
         "primary_language": primary_language,
         "client_id": client_id or "",
+        "github_repo": github_repo or "",
         "status": "active",
         "review_loop_count": 0,
     }

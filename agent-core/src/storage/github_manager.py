@@ -14,36 +14,44 @@ logger = logging.getLogger(__name__)
 
 async def create_client_repo(client_name: str, private: bool = True) -> str | None:
     """
-    Cria um repositório GitHub para o cliente usando gh CLI.
-    Retorna a URL do repositório ou None se falhar.
+    Cria um repositório GitHub para o cliente via REST API.
+    Usa /user/repos (conta pessoal) quando GITHUB_ORG == user logado,
+    ou /orgs/{org}/repos quando for uma organização real.
+    Se o repo já existir, retorna a URL existente (idempotente).
     """
+    import httpx
     settings = get_settings()
-    github_org = settings.github_org
+    token = settings.github_token
+    org = settings.github_org
+    if not token:
+        logger.error("GITHUB_TOKEN not configured")
+        return None
 
     repo_name = _sanitize_repo_name(client_name)
-    full_name = f"{github_org}/{repo_name}" if github_org else repo_name
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    payload = {
+        "name": repo_name,
+        "description": f"Cortex DS projects for {client_name}",
+        "private": private,
+        "auto_init": True,
+    }
 
-    try:
-        cmd = [
-            "gh", "repo", "create", full_name,
-            "--private" if private else "--public",
-            "--description", f"Cortex DS projects for {client_name}",
-            "--clone=false",
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-        if result.returncode == 0:
-            repo_url = f"https://github.com/{full_name}"
-            logger.info("Created GitHub repo: %s", repo_url)
-            return repo_url
-        else:
-            logger.error("Failed to create repo: %s", result.stderr)
-            return None
-    except subprocess.TimeoutExpired:
-        logger.error("Timeout creating GitHub repo")
-        return None
-    except FileNotFoundError:
-        logger.error("gh CLI not found. Install: https://cli.github.com/")
+    async with httpx.AsyncClient(timeout=30) as http:
+        # tenta criar em /user/repos (pessoal) — se ORG for conta pessoal, isso cobre
+        r = await http.post("https://api.github.com/user/repos", headers=headers, json=payload)
+        if r.status_code == 201:
+            url = r.json()["html_url"]
+            logger.info("Created GitHub repo: %s", url)
+            return url
+        if r.status_code == 422 and "already exists" in r.text.lower():
+            url = f"https://github.com/{org}/{repo_name}" if org else f"https://github.com/{repo_name}"
+            logger.info("Repo already exists (idempotent): %s", url)
+            return url
+        logger.error("Failed to create repo (%s): %s", r.status_code, r.text[:300])
         return None
 
 
@@ -99,6 +107,12 @@ async def push_analysis(
                 file_path = project_path / filename
                 file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_bytes(content)
+
+            # Git config (required pra commitar em ambiente CI-like)
+            subprocess.run(["git", "config", "user.email", "cortex@cortex.local"],
+                           cwd=repo_path, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Cortex Agent"],
+                           cwd=repo_path, capture_output=True)
 
             # Git add, commit, push
             subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)

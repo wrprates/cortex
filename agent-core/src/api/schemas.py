@@ -20,6 +20,7 @@ class PrimaryLanguage(str, Enum):
 class ClientCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     github_repo: str | None = None
+    auto_create_repo: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
 
 

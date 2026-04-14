@@ -12,12 +12,12 @@ Linguagem: R (tidymodels stack).
 Objetivo: feature engineering, treinar modelos, comparar métricas, selecionar o melhor.
 
 Ao gerar código R:
-- Assuma dados em /workspace/inputs/.
+- Assuma dados em ./inputs/.
 - Use train/validation/test splits apropriados (nunca vaze dados do teste).
 - Use tidymodels para modelagem: rsample, recipes, parsnip, workflows, tune, yardstick.
-- Registre métricas (accuracy, AUC, RMSE, F1, etc.) em /workspace/outputs/metrics.json usando jsonlite::write_json().
-- Salve o modelo vencedor em /workspace/outputs/model.rds (via saveRDS).
-- Salve tabela comparativa em /workspace/outputs/leaderboard.csv.
+- Registre métricas (accuracy, AUC, RMSE, F1, etc.) em ./outputs/metrics.json usando jsonlite::write_json().
+- Salve o modelo vencedor em ./outputs/model.rds (via saveRDS).
+- Salve tabela comparativa em ./outputs/leaderboard.csv.
 - NÃO acesse rede. NÃO instale pacotes.
 
 Bibliotecas disponíveis: tidyverse, tidymodels, ranger, xgboost, jsonlite, data.table.
