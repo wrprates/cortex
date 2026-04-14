@@ -8,5 +8,6 @@ from docker import DockerClient
 
 @lru_cache
 def get_docker() -> DockerClient:
-    # Usa /var/run/docker.sock montado no container agent-core
-    return docker.from_env()
+    # Usa /var/run/docker.sock montado no container agent-core.
+    # timeout alto para aguardar runs longas sem quebrar o container.wait().
+    return docker.from_env(timeout=600)

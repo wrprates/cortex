@@ -31,24 +31,47 @@ def node_plan(state: ProjectState) -> dict:
 
 
 def node_eda(state: ProjectState) -> dict:
+    from ..storage import minio_client
+    import os
+
     language = state.get("primary_language", "r")
     workflow_type = state.get("workflow_type", "full_ml")
+    datasets = state.get("datasets", [])
+
+    # Baixa datasets s3:// do MinIO pra passar como inputs ao sandbox
+    inputs: dict[str, bytes] = {}
+    for uri in datasets:
+        if uri.startswith("s3://"):
+            # s3://bucket/key...  → pega só o key (remove prefixo bucket)
+            path = uri[5:]
+            parts = path.split("/", 1)
+            if len(parts) == 2:
+                key = parts[1]
+                try:
+                    data = minio_client.get_bytes(key)
+                    inputs[os.path.basename(key)] = data
+                    logger.info("Dataset downloaded: %s (%d bytes)", key, len(data))
+                except Exception as e:
+                    logger.error("Failed to download %s: %s", uri, e)
 
     context = {
         "plan": state.get("plan"),
-        "datasets": state.get("datasets", []),
+        "datasets": datasets,
+        "available_inputs": list(inputs.keys()),
     }
 
     if language == "r":
         result = run_analyst_r(
             task="Execute EDA conforme o plano aprovado.",
             context=context,
+            inputs=inputs,
             workflow_type=workflow_type,
         )
     else:
         result = run_analyst(
             task="Execute EDA conforme o plano aprovado.",
             context=context,
+            inputs=inputs,
         )
 
     return {"eda_results": result, "current_phase": "eda"}

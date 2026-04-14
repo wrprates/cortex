@@ -55,11 +55,11 @@ def run_analyst_r(
         system=ANALYST_R_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": code_prompt}],
         complex=False,
-        max_tokens=4096,
+        max_tokens=16384,
     )
     code = _strip_code_fences(code_result.text)
 
-    sandbox_result = run_code(code=code, language="r", inputs=inputs)
+    sandbox_result = run_code(code=code, language="r", inputs=inputs, timeout=900, keep_workspace=True)
 
     summary_json: dict = {}
     summary_path = sandbox_result.outputs_dir / "summary.json"
