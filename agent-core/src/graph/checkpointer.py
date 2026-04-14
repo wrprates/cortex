@@ -22,10 +22,14 @@ def get_checkpointer() -> PostgresSaver:
     settings = get_settings()
     _pool = ConnectionPool(
         conninfo=settings.postgres_sync_dsn,
+        min_size=1,
         max_size=10,
+        open=False,
         kwargs={"autocommit": True, "prepare_threshold": 0},
     )
+    _pool.open()
+    _pool.wait(timeout=15.0)
     _saver = PostgresSaver(_pool)
     _saver.setup()
-    logger.info("PostgresSaver initialized")
+    logger.info("PostgresSaver initialized (pool ready)")
     return _saver

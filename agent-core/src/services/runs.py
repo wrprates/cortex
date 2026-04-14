@@ -30,6 +30,7 @@ def start_run(
     client_id: str | None = None,
 ) -> dict:
     """Dispara o grafo até a primeira interrupção (human approval do plano)."""
+    logger.warning("start_run ENTRY run_id=%s project_id=%s workflow=%s", run_id, project_id, workflow_type)
     graph = _graph()
     initial: ProjectState = {
         "project_id": str(project_id),
@@ -42,11 +43,13 @@ def start_run(
         "status": "active",
         "review_loop_count": 0,
     }
+    logger.warning("start_run BEFORE_INVOKE run_id=%s", run_id)
     try:
         state = graph.invoke(initial, config=_config(run_id))
+        logger.warning("start_run AFTER_INVOKE run_id=%s phase=%s", run_id, state.get("current_phase"))
         return _snapshot(state)
     except Exception as e:
-        logger.exception("run %s failed", run_id)
+        logger.exception("run %s failed: %s", run_id, e)
         return {"status": "failed", "error": str(e)}
 
 

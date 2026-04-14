@@ -1,3 +1,4 @@
+import threading
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -79,16 +80,20 @@ async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
 
     row = await db.insert_run(payload.project_id)
 
-    background.add_task(
-        runs_service.start_run,
-        run_id=row["id"],
-        project_id=payload.project_id,
-        description=project["description"] or "",
-        datasets=payload.datasets,
-        workflow_type=project.get("workflow_type", "full_ml"),
-        primary_language=project.get("primary_language", "r"),
-        client_id=str(project["client_id"]) if project.get("client_id") else None,
+    t = threading.Thread(
+        target=runs_service.start_run,
+        kwargs={
+            "run_id": row["id"],
+            "project_id": payload.project_id,
+            "description": project["description"] or "",
+            "datasets": payload.datasets,
+            "workflow_type": project.get("workflow_type", "full_ml"),
+            "primary_language": project.get("primary_language", "r"),
+            "client_id": str(project["client_id"]) if project.get("client_id") else None,
+        },
+        daemon=True,
     )
+    t.start()
     return RunOut(**row)
 
 
