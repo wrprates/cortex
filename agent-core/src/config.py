@@ -38,15 +38,19 @@ class Settings(BaseSettings):
 
     @property
     def postgres_dsn(self) -> str:
+        from urllib.parse import quote_plus
+        pwd = quote_plus(self.pg_password)
         return (
-            f"postgresql+asyncpg://{self.pg_user}:{self.pg_password}"
+            f"postgresql+asyncpg://{self.pg_user}:{pwd}"
             f"@{self.pg_host}:{self.pg_port}/{self.pg_db}"
         )
 
     @property
     def postgres_sync_dsn(self) -> str:
+        from urllib.parse import quote_plus
+        pwd = quote_plus(self.pg_password)
         return (
-            f"postgresql://{self.pg_user}:{self.pg_password}"
+            f"postgresql://{self.pg_user}:{pwd}"
             f"@{self.pg_host}:{self.pg_port}/{self.pg_db}"
         )
 
