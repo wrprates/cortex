@@ -12,23 +12,31 @@ Linguagem: R (tidyverse stack).
 Objetivo: inspecionar datasets, fazer EDA, gerar hipóteses, testes estatísticos e produzir visualizações interativas.
 
 Ao gerar código R:
-- Assuma que os dados estão em ./inputs/.
-- Salve plots e tabelas em ./outputs/.
+- Assuma dados em ./inputs/.
+- Salve plots, tabelas e artefatos em ./outputs/.
 - Salve um sumário estruturado em ./outputs/summary.json usando jsonlite::write_json().
 - NÃO acesse rede. NÃO tente instalar pacotes.
-- Bibliotecas disponíveis: tidyverse (dplyr, ggplot2, readr, tidyr, purrr, stringr, forcats),
-  data.table, echarts4r, plotly, DT, jsonlite, rmarkdown.
+- Bibliotecas: tidyverse, data.table, echarts4r, plotly, DT, jsonlite, rmarkdown,
+  quarto, htmlwidgets, broom, skimr.
 
-Para visualizações interativas:
-- Use echarts4r para gráficos HTML interativos.
-- Salve widgets HTML com htmlwidgets::saveWidget() em ./outputs/.
+ENTREGÁVEL PRINCIPAL: relatório HTML interativo em ./outputs/report.html
+- Estrutura o código assim:
+  1. Faz TODA a análise e grava resultados em objetos R (usar saveRDS() em ./outputs/analysis.rds).
+  2. Gera um report.qmd inline via writeLines() contendo a narrativa interpretativa em pt-BR.
+  3. Renderiza com quarto::quarto_render("report.qmd", output_format = "html") ou
+     rmarkdown::render() como fallback.
+  4. Move/copia o HTML final pra ./outputs/report.html.
+- O report.qmd deve ter seções com títulos (##), texto em pt-BR interpretando cada achado,
+  e blocos de código R que carregam analysis.rds e geram as visualizações interativas
+  com echarts4r (e |> e_charts()) para o leitor.
+- Use tryCatch() em análises opcionais — se falhar uma hipótese específica, logue com cat()
+  e siga; NÃO deixe o script inteiro crashar por um teste específico que não seja aplicável.
 
-Para testes de hipóteses:
-- Use t.test(), chisq.test(), wilcox.test(), cor.test() conforme apropriado.
-- Inclua p-values, intervalos de confiança e effect sizes no summary.json.
+Para testes de hipóteses: t.test/wilcox.test/chisq.test/cor.test com p-values, IC95%, effect
+sizes (cohen's d, r, cramer's V). Aplicar Bonferroni ou BH quando houver múltiplos testes.
 
-Quando pedirem código, responda APENAS com o bloco de código R (sem cercas markdown, sem explicação).
-Quando pedirem interpretação ou plano de EDA, responda em JSON estrito.
+Quando pedirem código, responda APENAS com o bloco R (sem cercas markdown).
+Quando pedirem interpretação/plano, responda em JSON estrito.
 """
 
 
@@ -82,8 +90,10 @@ def run_analyst_r(
             "tokens_out": code_result.tokens_out,
         })
 
-        # Sucesso: código rodou limpo E produziu summary.json
-        success = sandbox_result.exit_code == 0 and bool(summary_json)
+        # Sucesso: código rodou limpo, produziu summary.json E report.html
+        report_html_path = sandbox_result.outputs_dir / "report.html"
+        has_report = report_html_path.exists() and report_html_path.stat().st_size > 1000
+        success = sandbox_result.exit_code == 0 and bool(summary_json) and has_report
         if success or attempt == MAX_ATTEMPTS:
             return {
                 "code": code,
@@ -94,6 +104,7 @@ def run_analyst_r(
                 "stderr_tail": sandbox_result.stderr[-2000:],
                 "summary": summary_json,
                 "artifact_paths": [str(p) for p in sandbox_result.artifacts],
+                "outputs_dir": str(sandbox_result.outputs_dir),
                 "attempts": attempts,
                 "_usage": {
                     "tokens_in": sum(a["tokens_in"] for a in attempts),
@@ -104,18 +115,26 @@ def run_analyst_r(
 
         # Falhou e ainda tem tentativa: regenera com contexto do erro
         messages.append({"role": "assistant", "content": code_result.text})
+        feedback_lines = [
+            f"O código anterior não produziu entregável completo.",
+            f"exit_code={sandbox_result.exit_code}, summary.json={'OK' if summary_json else 'AUSENTE'}, report.html={'OK' if has_report else 'AUSENTE ou vazio'}.",
+            "",
+            f"STDERR (últimos 1500 chars):\n{sandbox_result.stderr[-1500:]}",
+            "",
+            f"STDOUT tail:\n{sandbox_result.stdout[-1200:]}",
+            "",
+            "CORRIJA o código R. Requisitos OBRIGATÓRIOS:",
+            "1. Produzir ./outputs/summary.json (via jsonlite::write_json).",
+            "2. Produzir ./outputs/report.html (via quarto::quarto_render ou rmarkdown::render).",
+            "3. Nos chunks do .qmd/.Rmd, JAMAIS referencie colunas por nome dinâmico sem verificar com if (col %in% names(df)) antes. Cuidado com dplyr::all_of() — só passe nomes que EXISTEM no df.",
+            "4. Envolva CADA chunk de visualização em tryCatch() para que UM chunk com erro não mate o render inteiro.",
+            "5. Se o Quarto falhar, use rmarkdown::render() como fallback. Se ambos falharem, construa o HTML manualmente com htmltools.",
+            "",
+            "Responda APENAS com o código R corrigido, sem explicação, sem cercas markdown.",
+        ]
         messages.append({
             "role": "user",
-            "content": (
-                f"O código anterior falhou com exit_code={sandbox_result.exit_code}.\n"
-                f"STDERR (últimos 1500 chars):\n{sandbox_result.stderr[-1500:]}\n\n"
-                f"STDOUT tail:\n{sandbox_result.stdout[-800:]}\n\n"
-                "Regenere o código R corrigindo o erro específico. Se o erro for de "
-                "uma análise não-aplicável (ex: variável constante, tamanho amostral "
-                "insuficiente), PULE essa análise com um cat() explicando o motivo, "
-                "não trave o script inteiro. Use tryCatch() nas análises opcionais. "
-                "Responda APENAS com o código R corrigido."
-            ),
+            "content": "\n".join(feedback_lines),
         })
 
 

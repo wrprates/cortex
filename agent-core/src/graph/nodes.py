@@ -17,6 +17,74 @@ logger = logging.getLogger(__name__)
 MAX_REVIEW_LOOPS = 2
 
 
+def _build_run_readme(state, report, eda, model) -> str:
+    run_id = state.get("run_id", "unknown")
+    plan = state.get("plan") or {}
+    title = report.get("title") or "Análise"
+    subtitle = report.get("subtitle") or ""
+    exec_sum = report.get("executive_summary") or ""
+    findings = report.get("key_findings") or []
+    conclusions = report.get("conclusions") or ""
+    recommendations = report.get("recommendations") or []
+    caveats = report.get("caveats") or []
+    push = report.get("_github_push", "?")
+    attempts = eda.get("attempts") or []
+    workflow = state.get("workflow_type", "?")
+    lang = state.get("primary_language", "?")
+
+    # lista de HTMLs em outputs/
+    lines = [f"# {title}"]
+    if subtitle:
+        lines.append(f"_{subtitle}_")
+    lines += [
+        "",
+        f"**Run:** `{run_id}` · **Workflow:** `{workflow}` · **Linguagem:** `{lang}`",
+        f"**Tentativas de execução:** {len(attempts)} · **Push:** `{push}`",
+        "",
+        "## 📊 Entregáveis",
+        "- `outputs/report.html` — relatório interativo (Quarto + echarts4r) — **abre no browser após clone**",
+        "- `outputs/*.html` — widgets interativos individuais (se houver)",
+        "- `outputs/*.csv` / `outputs/*.parquet` — tabelas de resultados",
+        "- `R/analyst_code.R` — código R fonte da análise",
+        "- `plan.json` — plano estruturado das fases",
+        "- `final_report.json` — relatório completo em JSON",
+        "",
+        "## 📝 Resumo Executivo",
+        exec_sum or "_(vazio)_",
+        "",
+    ]
+    if findings:
+        lines.append("## 🔑 Principais Achados")
+        for f in findings[:10]:
+            lines.append(f"- {f}")
+        lines.append("")
+    if conclusions:
+        lines += ["## ✅ Conclusões", str(conclusions), ""]
+    if recommendations:
+        lines.append("## 🎯 Recomendações")
+        for r in recommendations[:10]:
+            lines.append(f"- {r}")
+        lines.append("")
+    if caveats:
+        lines.append("## ⚠️ Ressalvas")
+        for c in caveats[:10]:
+            lines.append(f"- {c}")
+        lines.append("")
+    lines += [
+        "## 🗺️ Fases Planejadas",
+    ]
+    for i, ph in enumerate(plan.get("phases") or [], 1):
+        nm = ph.get("name", "?")
+        ap = "🔐" if ph.get("requires_human_approval") else "•"
+        lines.append(f"{i}. {ap} **{nm}**")
+    lines += [
+        "",
+        "---",
+        "Gerado pelo **Cortex** — agente multi-LLM de ciência de dados.",
+    ]
+    return "\n".join(lines)
+
+
 def _loop_run(coro):
     """Roda uma coroutine num loop novo, isolado — safe em thread."""
     import asyncio
@@ -163,16 +231,33 @@ def node_report(state: ProjectState) -> dict:
     repo_url = state.get("github_repo")
     if repo_url:
         try:
+            from pathlib import Path
             eda = state.get("eda_results") or {}
             model = state.get("model_results") or {}
-            files = {
+            plan = state.get("plan") or {}
+
+            files: dict[str, bytes] = {
+                "plan.json": _json.dumps(plan, ensure_ascii=False, indent=2).encode(),
                 "final_report.json": _json.dumps(report, ensure_ascii=False, indent=2).encode(),
-                "plan.json": _json.dumps(state.get("plan") or {}, ensure_ascii=False, indent=2).encode(),
                 "eda_summary.json": _json.dumps(eda.get("summary") or {}, ensure_ascii=False, indent=2).encode(),
-                "analyst_code.R": (eda.get("code") or "").encode(),
+                "R/analyst_code.R": (eda.get("code") or "").encode(),
             }
             if model.get("code"):
-                files["modeler_code.R"] = model["code"].encode()
+                files["R/modeler_code.R"] = model["code"].encode()
+
+            # Coleta artefatos do sandbox (outputs/): HTMLs do Quarto, CSVs, PNGs, etc.
+            outputs_dir_str = eda.get("outputs_dir")
+            if outputs_dir_str:
+                outputs_dir = Path(outputs_dir_str)
+                if outputs_dir.exists():
+                    for p in outputs_dir.rglob("*"):
+                        if p.is_file():
+                            rel = p.relative_to(outputs_dir)
+                            files[f"outputs/{rel}"] = p.read_bytes()
+
+            # README.md do run (visibilidade pro usuário clonar e entender)
+            files["README.md"] = _build_run_readme(state, report, eda, model).encode()
+
             project_name = f"run-{state.get('run_id','unknown')[:8]}"
             ok = _loop_run(github_manager.push_analysis(repo_url, project_name, files))
             push_status = "pushed" if ok else "failed"

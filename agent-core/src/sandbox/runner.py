@@ -55,6 +55,15 @@ def run_code(
     workspace_in_core = Path(settings.sandbox_shared_mount) / run_id
     (workspace_in_core / "inputs").mkdir(parents=True, exist_ok=True)
     (workspace_in_core / "outputs").mkdir(parents=True, exist_ok=True)
+    # Permissões: agent-core roda como root, sandbox roda como uid 1000.
+    # Sem isso, o R não consegue escrever em ./outputs/ (permission denied).
+    import os as _os, stat as _stat
+    for sub in ("", "inputs", "outputs"):
+        p = workspace_in_core / sub if sub else workspace_in_core
+        try:
+            _os.chmod(p, 0o777)
+        except Exception:
+            pass
 
     # Path visto de dentro do container sandbox (working_dir):
     workspace_in_sandbox = f"{SANDBOX_ROOT_IN_SANDBOX}/{run_id}"
