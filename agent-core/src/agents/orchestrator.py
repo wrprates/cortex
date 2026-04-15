@@ -2,62 +2,75 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..templates import compose_prompts, load_prompt
 from .base import call_llm, parse_json
 
-ORCHESTRATOR_SYSTEM_PROMPT = """\
-Você é o **Orchestrator** de uma equipe virtual de ciência de dados.
-Sua missão: transformar o briefing de um projeto em um plano de trabalho executável
-por agentes especializados (Data Analyst, Modeler, Reviewer) e consolidar resultados.
-
-Tipos de workflow suportados:
-- data_quality: Apenas análise de qualidade de dados (completude, consistência, unicidade, validade)
-- eda_hypothesis: EDA completa + testes de hipóteses estatísticos (sem modelagem ML)
-- full_ml: Workflow completo com EDA, modelagem e revisão
-
-Responsabilidades:
-- Ler a descrição do problema e dos dados disponíveis.
-- Gerar um plano adaptado ao tipo de workflow solicitado.
-- Delegar tarefas específicas a cada agente, com objetivos mensuráveis.
-- Identificar pontos que exigem aprovação humana (plano inicial e antes de treino final).
-- Ao final, consolidar os artefatos produzidos em um relatório HTML interativo.
-
-Regras:
-- Seja específico e pragmático; evite jargão sem valor.
-- Todas as decisões técnicas devem ter justificativa curta (1-2 frases).
-- Quando gerar plano ou relatório, responda **APENAS em JSON válido**, sem texto extra.
-- Relatórios devem ser gerados em formato compatível com Quarto/echarts4r.
-"""
+ORCHESTRATOR_SYSTEM_PROMPT = compose_prompts("orchestrator_base", "report_narrative")
 
 
-def _get_plan_prompt(workflow_type: str) -> str:
-    """Retorna o prompt de planejamento adequado ao tipo de workflow."""
+def _plan_user_prompt(workflow_type: str) -> str:
     base_schema = (
         '{"phases": [{"name": str, "agent": "analyst|modeler|reviewer|orchestrator", '
-        '"objective": str, "success_criteria": str, "requires_human_approval": bool}], '
-        '"summary": str, "risks": [str]}'
+        '"objective": str, "success_criteria": str, "requires_human_approval": bool, '
+        '"rationale": str}], "summary": str, "risks": [str], '
+        '"feasibility": {"assessment": "ok|ok_with_caveats|not_viable", "notes": str}}'
     )
 
     if workflow_type == "data_quality":
-        return (
-            "Gere um plano de ANÁLISE DE QUALIDADE DE DADOS. "
-            "Este workflow foca em: completude, consistência, unicidade e validade dos dados. "
-            "NÃO inclua fases de modelagem ML. "
-            f"Responda em JSON com o schema:\n{base_schema}"
+        focus = (
+            "Plano de **qualidade de dados** seguindo `quality.md`: completude, consistência, "
+            "unicidade, validade. Não inclua fases de ML."
         )
     elif workflow_type == "eda_hypothesis":
-        return (
-            "Gere um plano de EDA + TESTES DE HIPÓTESES. "
-            "Este workflow inclui: análise exploratória completa, estatísticas descritivas, "
-            "visualizações, e testes de hipóteses estatísticos (t-test, chi-square, correlações). "
-            "NÃO inclua fases de modelagem ML. "
-            f"Responda em JSON com o schema:\n{base_schema}"
+        focus = (
+            "Plano de **qualidade + EDA por hipóteses** seguindo `quality.md` e `hypothesis.md`. "
+            "Cada hipótese do plano precisa ser formulada em linguagem de negócio com seu teste "
+            "estatístico correspondente. Não inclua fases de ML."
         )
     else:  # full_ml
-        return (
-            "Gere um plano completo de DATA SCIENCE com ML. "
-            "Fases: EDA → feature engineering → modelagem → revisão → relatório. "
-            f"Responda em JSON com o schema:\n{base_schema}"
+        focus = (
+            "Plano completo: **qualidade → EDA por hipóteses → modelagem → revisão → relatório**. "
+            "Na fase de modelagem, avalie viabilidade: se não houver target claro ou N insuficiente, "
+            "declare inviabilidade em `feasibility` e remova a fase."
         )
+
+    return (
+        f"{focus}\n\n"
+        "Para cada fase, inclua `rationale` explicando **por que ela está no plano** "
+        "em 1-2 frases. Se alguma etapa padrão for omitida, justifique em `feasibility.notes`.\n\n"
+        f"Responda em JSON estrito seguindo o schema:\n{base_schema}"
+    )
+
+
+_REPORT_SCHEMA = (
+    '{"title": str, "subtitle": str, "executive_summary": str (markdown, 3-6 parágrafos), '
+    '"key_findings": [{"finding": str, "significance": str, "recommended_action": str}], '
+    '"quality_verdict": str (apto|apto_com_ressalvas|inapto), '
+    '"quality_notes": str (markdown), '
+    '"has_hypothesis_tests": bool, '
+    '"hypothesis_interpretation": str (markdown, com regra das 3 camadas), '
+    '"has_modeling": bool, '
+    '"model_interpretation": str (markdown), '
+    '"conclusions": str (markdown), '
+    '"recommendations": [{"action": str, "justification": str, "expected_impact": str}], '
+    '"caveats": [str]}'
+)
+
+_PROMPTS = {
+    "decide_next": (
+        "Dado o estado atual do projeto, decida a próxima fase. Se houver erro em um agente, "
+        "avalie: (a) pedir retry com correção, (b) pular a fase documentando no report, "
+        "(c) abortar. Nunca invente dados para mascarar falha.\n"
+        'Responda em JSON: {"next_phase": str, "next_agent": str, "reasoning": str, '
+        '"action_on_error": "retry|skip|abort"|null, "done": bool}'
+    ),
+    "compile_report": (
+        "Consolide os resultados em um relatório final seguindo `report_narrative.md`. "
+        "Cada `key_finding` precisa respeitar a **regra das 3 camadas** (observação → "
+        "significado → ação). Sem tabelas soltas, sem jargão cru. Português do Brasil.\n\n"
+        f"Responda em JSON estrito:\n{_REPORT_SCHEMA}"
+    ),
+}
 
 
 def run_orchestrator(
@@ -66,36 +79,16 @@ def run_orchestrator(
     *,
     complex: bool = True,
 ) -> dict:
-    """
-    action: 'plan' | 'decide_next' | 'compile_report'
-    context: dados relevantes para a ação.
-    """
-    workflow_type = context.get("workflow_type", "full_ml")
-
-    plan_prompt = _get_plan_prompt(workflow_type)
-
-    prompts = {
-        "plan": plan_prompt,
-        "decide_next": (
-            "Dado o estado atual do projeto, decida a próxima fase e o agente a chamar. "
-            'Responda em JSON: {"next_phase": str, "next_agent": str, "reasoning": str, '
-            '"done": bool}'
-        ),
-        "compile_report": (
-            "Consolide os resultados em um relatório final HTML interativo. "
-            "O relatório será renderizado com Quarto e echarts4r. "
-            "Responda em JSON com o schema:\n"
-            '{"title": str, "subtitle": str, "executive_summary": str, '
-            '"quality_alerts": str (markdown), "key_findings": [str], '
-            '"has_hypothesis_tests": bool, "hypothesis_interpretation": str, '
-            '"has_modeling": bool, "conclusions": str (markdown), '
-            '"metrics": dict, "recommendations": [str], "caveats": [str]}'
-        ),
-    }
-    if action not in prompts:
+    """action: 'plan' | 'decide_next' | 'compile_report'."""
+    if action == "plan":
+        workflow_type = context.get("workflow_type", "full_ml")
+        user_prompt = _plan_user_prompt(workflow_type)
+    elif action in _PROMPTS:
+        user_prompt = _PROMPTS[action]
+    else:
         raise ValueError(f"unknown orchestrator action: {action}")
 
-    user_msg = f"{prompts[action]}\n\n---\nContexto:\n{_format_context(context)}"
+    user_msg = f"{user_prompt}\n\n---\nContexto:\n{_format_context(context)}"
 
     result = call_llm(
         system=ORCHESTRATOR_SYSTEM_PROMPT,
@@ -103,10 +96,15 @@ def run_orchestrator(
         complex=complex,
     )
     parsed = parse_json(result.text)
-    parsed["_usage"] = {"tokens_in": result.tokens_in, "tokens_out": result.tokens_out, "model": result.model}
+    parsed["_usage"] = {
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "model": result.model,
+    }
     return parsed
 
 
 def _format_context(ctx: dict) -> str:
     import json
+
     return json.dumps(ctx, indent=2, default=str, ensure_ascii=False)
