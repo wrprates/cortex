@@ -90,10 +90,16 @@ def run_orchestrator(
 
     user_msg = f"{user_prompt}\n\n---\nContexto:\n{_format_context(context)}"
 
+    # compile_report produz narrativa rica em pt-BR (executive_summary, findings com
+    # 3 camadas, recomendações, etc.) — default de 4096 tokens trunca. Outras ações
+    # (plan, decide_next) cabem bem abaixo disso.
+    max_tokens = 8192 if action == "compile_report" else 4096
+
     result = call_llm(
         system=ORCHESTRATOR_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_msg}],
         complex=complex,
+        max_tokens=max_tokens,
     )
     parsed = parse_json(result.text)
     parsed["_usage"] = {
