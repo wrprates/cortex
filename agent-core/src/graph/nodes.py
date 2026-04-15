@@ -39,6 +39,24 @@ def _download_inputs(datasets: list[str]) -> dict[str, bytes]:
     return inputs
 
 
+def _fmt_finding(f) -> str:
+    if isinstance(f, dict):
+        obs = f.get("finding") or ""
+        sig = f.get("significance") or ""
+        act = f.get("recommended_action") or ""
+        return f"**{obs}** — {sig} _Ação:_ {act}".strip()
+    return str(f)
+
+
+def _fmt_recommendation(r) -> str:
+    if isinstance(r, dict):
+        action = r.get("action") or ""
+        just = r.get("justification") or ""
+        impact = r.get("expected_impact") or ""
+        return f"**{action}** — {just} (_Impacto esperado:_ {impact})".strip()
+    return str(r)
+
+
 def _build_run_readme(state, report, eda, model) -> str:
     run_id = state.get("run_id", "unknown")
     plan = state.get("plan") or {}
@@ -49,25 +67,28 @@ def _build_run_readme(state, report, eda, model) -> str:
     conclusions = report.get("conclusions") or ""
     recommendations = report.get("recommendations") or []
     caveats = report.get("caveats") or []
-    push = report.get("_github_push", "?")
     attempts = eda.get("attempts") or []
     workflow = state.get("workflow_type", "?")
-    lang = state.get("primary_language", "?")
+    quality_verdict = report.get("quality_verdict", "n/a")
 
-    # lista de HTMLs em outputs/
     lines = [f"# {title}"]
     if subtitle:
         lines.append(f"_{subtitle}_")
     lines += [
         "",
-        f"**Run:** `{run_id}` · **Workflow:** `{workflow}` · **Linguagem:** `{lang}`",
-        f"**Tentativas de execução:** {len(attempts)} · **Push:** `{push}`",
+        f"**Run:** `{run_id}` · **Workflow:** `{workflow}` · "
+        f"**Veredito de qualidade:** `{quality_verdict}` · "
+        f"**Tentativas:** {len(attempts)}",
         "",
-        "## 📊 Entregáveis",
-        "- `outputs/report.html` — relatório interativo (Quarto + echarts4r) — **abre no browser após clone**",
-        "- `outputs/*.html` — widgets interativos individuais (se houver)",
-        "- `outputs/*.csv` / `outputs/*.parquet` — tabelas de resultados",
-        "- `R/analyst_code.R` — código R fonte da análise",
+        "## 📊 Entregáveis neste branch",
+        "- `outputs/report.html` — relatório Quarto interativo **(abra no browser para ver os insights)**",
+        "- `outputs/*.html` — widgets complementares (se houver)",
+        "- `outputs/*.csv` / `*.parquet` — tabelas de apoio",
+        "- `R/01_analyst.R` — código R da análise",
+    ]
+    if model.get("code"):
+        lines.append("- `R/02_modeler.R` — código R da modelagem")
+    lines += [
         "- `plan.json` — plano estruturado das fases",
         "- `final_report.json` — relatório completo em JSON",
         "",
@@ -78,43 +99,36 @@ def _build_run_readme(state, report, eda, model) -> str:
     if findings:
         lines.append("## 🔑 Principais Achados")
         for f in findings[:10]:
-            lines.append(f"- {f}")
+            lines.append(f"- {_fmt_finding(f)}")
         lines.append("")
     if conclusions:
         lines += ["## ✅ Conclusões", str(conclusions), ""]
     if recommendations:
         lines.append("## 🎯 Recomendações")
         for r in recommendations[:10]:
-            lines.append(f"- {r}")
+            lines.append(f"- {_fmt_recommendation(r)}")
         lines.append("")
     if caveats:
         lines.append("## ⚠️ Ressalvas")
         for c in caveats[:10]:
             lines.append(f"- {c}")
         lines.append("")
-    lines += [
-        "## 🗺️ Fases Planejadas",
-    ]
+    lines += ["## 🗺️ Fases Planejadas"]
     for i, ph in enumerate(plan.get("phases") or [], 1):
         nm = ph.get("name", "?")
+        rat = ph.get("rationale") or ""
         ap = "🔐" if ph.get("requires_human_approval") else "•"
-        lines.append(f"{i}. {ap} **{nm}**")
+        line = f"{i}. {ap} **{nm}**"
+        if rat:
+            line += f" — {rat}"
+        lines.append(line)
     lines += [
         "",
         "---",
-        "Gerado pelo **Cortex** — agente multi-LLM de ciência de dados.",
+        f"Gerado pelo **Cortex** — run `{run_id}`. Para abrir um PR contra `main`, "
+        f"navegue até o branch `run/{run_id[:8] if isinstance(run_id,str) else ''}` e use o botão **Compare & pull request** do GitHub.",
     ]
     return "\n".join(lines)
-
-
-def _loop_run(coro):
-    """Roda uma coroutine num loop novo, isolado — safe em thread."""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
 
 
 def node_probe(state: ProjectState) -> dict:
@@ -262,9 +276,9 @@ def node_review(state: ProjectState) -> dict:
 
 
 def node_report(state: ProjectState) -> dict:
-    import asyncio
     import json as _json
-    from ..storage import github_manager, postgres as _db
+    from pathlib import Path
+    from ..storage import github_manager
 
     report = run_orchestrator(
         "compile_report",
@@ -276,26 +290,29 @@ def node_report(state: ProjectState) -> dict:
         },
     )
 
-    # Push pro GitHub se o cliente tem repo (já resolvido no start, via state)
-    push_status = "skipped"
+    push_info: dict = {"status": "skipped"}
     repo_url = state.get("github_repo")
     if repo_url:
         try:
-            from pathlib import Path
             eda = state.get("eda_results") or {}
             model = state.get("model_results") or {}
             plan = state.get("plan") or {}
+            run_id = state.get("run_id", "unknown")
+            run_short = run_id[:8] if isinstance(run_id, str) else "unknown"
 
+            # Arquivos vão direto na raiz da branch — sem subpasta por run.
             files: dict[str, bytes] = {
                 "plan.json": _json.dumps(plan, ensure_ascii=False, indent=2).encode(),
                 "final_report.json": _json.dumps(report, ensure_ascii=False, indent=2).encode(),
-                "eda_summary.json": _json.dumps(eda.get("summary") or {}, ensure_ascii=False, indent=2).encode(),
-                "R/analyst_code.R": (eda.get("code") or "").encode(),
+                "eda_summary.json": _json.dumps(
+                    eda.get("summary") or {}, ensure_ascii=False, indent=2
+                ).encode(),
+                "R/01_analyst.R": (eda.get("code") or "").encode(),
             }
             if model.get("code"):
-                files["R/modeler_code.R"] = model["code"].encode()
+                files["R/02_modeler.R"] = model["code"].encode()
 
-            # Coleta artefatos do sandbox (outputs/): HTMLs do Quarto, CSVs, PNGs, etc.
+            # Artefatos do sandbox vão para outputs/ na raiz
             outputs_dir_str = eda.get("outputs_dir")
             if outputs_dir_str:
                 outputs_dir = Path(outputs_dir_str)
@@ -305,17 +322,22 @@ def node_report(state: ProjectState) -> dict:
                             rel = p.relative_to(outputs_dir)
                             files[f"outputs/{rel}"] = p.read_bytes()
 
-            # README.md do run (visibilidade pro usuário clonar e entender)
             files["README.md"] = _build_run_readme(state, report, eda, model).encode()
 
-            project_name = f"run-{state.get('run_id','unknown')[:8]}"
-            ok = _loop_run(github_manager.push_analysis(repo_url, project_name, files))
-            push_status = "pushed" if ok else "failed"
+            branch_name = f"run/{run_short}"
+            commit_msg = (
+                f"Cortex run {run_short}: {state.get('workflow_type','?')} "
+                f"({len(eda.get('attempts') or [])} tentativas)"
+            )
+            push_info = github_manager.push_to_branch(
+                repo_url, branch_name, files, commit_message=commit_msg
+            )
+            push_info["status"] = "pushed" if push_info.get("ok") else "failed"
         except Exception as e:
             logger.exception("github push error: %s", e)
-            push_status = f"error:{type(e).__name__}"
+            push_info = {"status": f"error:{type(e).__name__}", "error": str(e)}
 
-    report["_github_push"] = push_status
+    report["_github_push"] = push_info
     return {
         "final_report": report,
         "current_phase": "done",
