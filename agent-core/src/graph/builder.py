@@ -12,9 +12,10 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
     Constrói o grafo LangGraph com human-in-the-loop e suporte a workflows parciais.
 
     Workflows:
-    - data_quality: plan → eda → report (sem modelagem)
-    - eda_hypothesis: plan → eda → report (com testes de hipóteses, sem modelagem)
-    - full_ml: plan → eda → decide_next → modeling → review → report
+    - data_quality:   probe → planning → quality → report
+    - eda_hypothesis: probe → planning → quality → hypothesis → report
+    - full_ml:        probe → planning → quality → hypothesis → decide_next
+                                                              → modeling → review → report
 
     interrupt_after força o grafo a pausar; o run é retomado via API após a decisão humana.
     """
@@ -22,7 +23,8 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
 
     g.add_node("probe", nodes.node_probe)
     g.add_node("planning", nodes.node_plan)
-    g.add_node("eda", nodes.node_eda)
+    g.add_node("quality", nodes.node_quality)
+    g.add_node("hypothesis", nodes.node_hypothesis)
     g.add_node("decide_next", nodes.node_decide_next)
     g.add_node("modeling", nodes.node_modeling)
     g.add_node("review", nodes.node_review)
@@ -30,12 +32,16 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
 
     g.add_edge(START, "probe")
     g.add_edge("probe", "planning")
-    g.add_edge("planning", "eda")
+    g.add_edge("planning", "quality")
 
-    # Roteamento condicional após EDA baseado em workflow_type
     g.add_conditional_edges(
-        "eda",
-        nodes.route_after_eda,
+        "quality",
+        nodes.route_after_quality,
+        {"hypothesis": "hypothesis", "report": "report"},
+    )
+    g.add_conditional_edges(
+        "hypothesis",
+        nodes.route_after_hypothesis,
         {"decide_next": "decide_next", "report": "report"},
     )
 
