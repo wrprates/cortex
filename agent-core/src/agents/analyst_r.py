@@ -8,25 +8,28 @@ from ..templates import compose_prompts
 from .base import call_llm
 
 
-def _system_prompt(workflow_type: str) -> str:
-    """Compõe o system prompt combinando base + prompt da fase + regras de narrativa."""
-    phase_prompt = {
-        "data_quality": "quality",
-        "eda_hypothesis": "hypothesis",
-        "full_ml": "hypothesis",  # analyst cobre qualidade+EDA; modeler cuida de ML
-    }.get(workflow_type, "hypothesis")
+_VALID_STAGES = ("quality", "hypothesis")
 
-    return compose_prompts("analyst_base", phase_prompt, "report_narrative")
+
+def _system_prompt(stage: str) -> str:
+    """Compõe o system prompt: base + prompt da stage + regras de narrativa."""
+    if stage not in _VALID_STAGES:
+        raise ValueError(f"stage inválida: {stage!r}; use uma de {_VALID_STAGES}")
+    return compose_prompts("analyst_base", stage, "report_narrative")
 
 
 def run_analyst_r(
     task: str,
     context: dict[str, Any],
     inputs: dict[str, bytes] | None = None,
-    workflow_type: str = "full_ml",
+    *,
+    stage: str = "hypothesis",
 ) -> dict:
-    """Gera código R de análise, executa no sandbox, coleta resultado."""
-    system_prompt = _system_prompt(workflow_type)
+    """Gera código R de análise, executa no sandbox, coleta resultado.
+
+    stage: "quality" ou "hypothesis" — define o prompt especializado usado.
+    """
+    system_prompt = _system_prompt(stage)
 
     code_prompt = (
         f"Tarefa: {task}\n\n"
@@ -81,7 +84,7 @@ def run_analyst_r(
             return {
                 "code": code,
                 "language": "r",
-                "workflow_type": workflow_type,
+                "stage": stage,
                 "exit_code": sandbox_result.exit_code,
                 "timed_out": sandbox_result.timed_out,
                 "stdout_tail": sandbox_result.stdout[-2000:],

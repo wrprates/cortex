@@ -57,9 +57,30 @@ def _fmt_recommendation(r) -> str:
     return str(r)
 
 
-def _build_run_readme(state, report, eda, model) -> str:
+def _stage_line(stage_key: str, stage_result: dict, code_path: str) -> str | None:
+    """Descreve uma stage que rodou, para o README."""
+    if not stage_result:
+        return None
+    attempts = stage_result.get("attempts") or []
+    status = "✅"
+    if stage_result.get("skipped"):
+        reason = stage_result.get("skip_reason") or "decisão do decision_maker"
+        status = f"⏭️ pulado — {reason}"
+    elif not stage_result.get("success"):
+        status = "⚠️ terminou com falhas (ver stderr)"
+    return (
+        f"- **{stage_key}** — {status} · {len(attempts)} tentativas · "
+        f"código: `{code_path}` · relatório: `outputs/{stage_key}.html`"
+    )
+
+
+def _build_run_readme(state, report) -> str:
     run_id = state.get("run_id", "unknown")
     plan = state.get("plan") or {}
+    quality = state.get("quality_results") or {}
+    hypothesis = state.get("hypothesis_results") or {}
+    model = state.get("model_results") or {}
+
     title = report.get("title") or "Análise"
     subtitle = report.get("subtitle") or ""
     exec_sum = report.get("executive_summary") or ""
@@ -67,7 +88,6 @@ def _build_run_readme(state, report, eda, model) -> str:
     conclusions = report.get("conclusions") or ""
     recommendations = report.get("recommendations") or []
     caveats = report.get("caveats") or []
-    attempts = eda.get("attempts") or []
     workflow = state.get("workflow_type", "?")
     quality_verdict = report.get("quality_verdict", "n/a")
 
@@ -77,20 +97,31 @@ def _build_run_readme(state, report, eda, model) -> str:
     lines += [
         "",
         f"**Run:** `{run_id}` · **Workflow:** `{workflow}` · "
-        f"**Veredito de qualidade:** `{quality_verdict}` · "
-        f"**Tentativas:** {len(attempts)}",
+        f"**Veredito de qualidade:** `{quality_verdict}`",
+        "",
+        "## 🧭 Etapas executadas",
+    ]
+    for line in filter(
+        None,
+        [
+            _stage_line("quality", quality, "R/01_quality.R"),
+            _stage_line("hypothesis", hypothesis, "R/02_hypothesis.R"),
+            _stage_line("ml", model, "R/03_ml.R") if model else None,
+        ],
+    ):
+        lines.append(line)
+    lines += [
         "",
         "## 📊 Entregáveis neste branch",
-        "- `outputs/report.html` — relatório Quarto interativo **(abra no browser para ver os insights)**",
-        "- `outputs/*.html` — widgets complementares (se houver)",
-        "- `outputs/*.csv` / `*.parquet` — tabelas de apoio",
-        "- `R/01_analyst.R` — código R da análise",
+        "- `outputs/quality.html` — relatório de qualidade dos dados",
+        "- `outputs/hypothesis.html` — EDA por hipóteses (se workflow != data_quality)",
     ]
-    if model.get("code"):
-        lines.append("- `R/02_modeler.R` — código R da modelagem")
+    if model:
+        lines.append("- `outputs/ml.html` — modelagem (se workflow = full_ml)")
     lines += [
-        "- `plan.json` — plano estruturado das fases",
-        "- `final_report.json` — relatório completo em JSON",
+        "- `outputs/*_summary.json` — sumário estruturado por etapa",
+        "- `R/0N_<etapa>.R` — código R de cada etapa",
+        "- `plan.json` / `final_report.json` — metadados do run",
         "",
         "## 📝 Resumo Executivo",
         exec_sum or "_(vazio)_",
@@ -161,62 +192,76 @@ def node_plan(state: ProjectState) -> dict:
     return {"plan": plan, "current_phase": "planning", "status": "waiting_human"}
 
 
-def node_eda(state: ProjectState) -> dict:
-    language = state.get("primary_language", "r")
-    workflow_type = state.get("workflow_type", "full_ml")
-    datasets = state.get("datasets", [])
+_STAGE_TASK = {
+    "quality": "Execute a fase de QUALIDADE DE DADOS conforme o plano aprovado.",
+    "hypothesis": "Execute a fase de EDA POR HIPÓTESES conforme o plano aprovado.",
+}
 
+
+def _run_analyst_stage(state: ProjectState, stage: str) -> dict:
+    """Roda o analyst_r para a stage dada; consulta decision_maker em caso de falha."""
+    datasets = state.get("datasets", [])
     inputs = _download_inputs(datasets)
 
     context = {
         "plan": state.get("plan"),
+        "stage": stage,
         "datasets": datasets,
         "available_inputs": list(inputs.keys()),
         "dataset_profile": state.get("dataset_profile"),
+        "quality_summary": (state.get("quality_results") or {}).get("summary"),
     }
 
-    def _run_analyst(extra_guidance: str = "") -> dict:
-        task = "Execute EDA conforme o plano aprovado."
+    def _call(extra_guidance: str = "") -> dict:
+        task = _STAGE_TASK[stage]
         if extra_guidance:
             task = f"{task}\n\nOrientação do decision_maker:\n{extra_guidance}"
-        if language == "r":
-            return run_analyst_r(
-                task=task, context=context, inputs=inputs, workflow_type=workflow_type
-            )
-        return run_analyst(task=task, context=context, inputs=inputs)
+        return run_analyst_r(task=task, context=context, inputs=inputs, stage=stage)
 
-    result = _run_analyst()
+    result = _call()
 
-    # Se falhou após os retries internos do analyst, consulta decision_maker.
     if not result.get("success"):
         decision = run_decision_maker(
-            failing_agent="analyst_r" if language == "r" else "analyst",
-            objective="EDA conforme plano aprovado",
+            failing_agent=f"analyst_r[{stage}]",
+            objective=_STAGE_TASK[stage],
             attempts=result.get("attempts", []),
             stderr_tail=result.get("stderr_tail", ""),
             stdout_tail=result.get("stdout_tail", ""),
             profile=state.get("dataset_profile"),
         )
-        logger.warning("decision_maker: %s — %s", decision.get("action"), decision.get("rationale"))
+        logger.warning(
+            "decision_maker[%s]: %s — %s",
+            stage, decision.get("action"), decision.get("rationale"),
+        )
 
         action = decision.get("action")
         if action == "retry_with_guidance":
-            result_retry = _run_analyst(extra_guidance=decision.get("guidance", ""))
-            result_retry["_decision"] = decision
-            result = result_retry
+            retry = _call(extra_guidance=decision.get("guidance", ""))
+            retry["_decision"] = decision
+            result = retry
         elif action == "skip":
             result["_decision"] = decision
             result["skipped"] = True
             result["skip_reason"] = decision.get("rationale", "infeasible")
         elif action == "abort":
             raise RuntimeError(
-                f"EDA abortado pelo decision_maker: {decision.get('rationale')}"
+                f"Stage {stage!r} abortada pelo decision_maker: {decision.get('rationale')}"
             )
         else:
             logger.error("decision_maker retornou action desconhecida: %s", action)
             result["_decision"] = decision
 
-    return {"eda_results": result, "current_phase": "eda"}
+    return result
+
+
+def node_quality(state: ProjectState) -> dict:
+    result = _run_analyst_stage(state, "quality")
+    return {"quality_results": result, "current_phase": "quality"}
+
+
+def node_hypothesis(state: ProjectState) -> dict:
+    result = _run_analyst_stage(state, "hypothesis")
+    return {"hypothesis_results": result, "current_phase": "hypothesis"}
 
 
 def node_decide_next(state: ProjectState) -> dict:
@@ -224,7 +269,8 @@ def node_decide_next(state: ProjectState) -> dict:
         "decide_next",
         context={
             "plan": state.get("plan"),
-            "eda_results": state.get("eda_results"),
+            "quality_results": state.get("quality_results"),
+            "hypothesis_results": state.get("hypothesis_results"),
             "model_results": state.get("model_results"),
             "review_results": state.get("review_results"),
         },
@@ -237,7 +283,8 @@ def node_modeling(state: ProjectState) -> dict:
 
     context = {
         "plan": state.get("plan"),
-        "eda_summary": (state.get("eda_results") or {}).get("summary"),
+        "quality_summary": (state.get("quality_results") or {}).get("summary"),
+        "hypothesis_summary": (state.get("hypothesis_results") or {}).get("summary"),
     }
 
     if language == "r":
@@ -263,7 +310,8 @@ def node_modeling(state: ProjectState) -> dict:
 def node_review(state: ProjectState) -> dict:
     result = run_reviewer(
         artifacts_context={
-            "eda_results": state.get("eda_results"),
+            "quality_results": state.get("quality_results"),
+            "hypothesis_results": state.get("hypothesis_results"),
             "model_results": state.get("model_results"),
         }
     )
@@ -275,17 +323,68 @@ def node_review(state: ProjectState) -> dict:
     }
 
 
+def _collect_stage_artifacts(
+    files: dict[str, bytes],
+    stage_result: dict,
+    stage_key: str,
+    code_path: str,
+) -> None:
+    """
+    Coleta artefatos de uma stage para o dict `files`:
+
+    - Copia o código R para `code_path` (ex: "R/01_quality.R").
+    - Renomeia `outputs/report.html` da stage para `outputs/{stage_key}.html`.
+    - Renomeia `outputs/summary.json` para `outputs/{stage_key}_summary.json`.
+    - Copia qualquer outro artefato mantendo o nome em `outputs/`.
+    """
+    from pathlib import Path
+
+    if not stage_result:
+        return
+
+    code = stage_result.get("code") or ""
+    if code:
+        files[code_path] = code.encode()
+
+    outputs_dir_str = stage_result.get("outputs_dir")
+    if not outputs_dir_str:
+        return
+    outputs_dir = Path(outputs_dir_str)
+    if not outputs_dir.exists():
+        return
+
+    for p in outputs_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(outputs_dir)
+        name = rel.name
+        if name == "report.html":
+            dest = f"outputs/{stage_key}.html"
+        elif name == "summary.json":
+            dest = f"outputs/{stage_key}_summary.json"
+        elif name == "analysis.rds":
+            dest = f"outputs/{stage_key}_analysis.rds"
+        else:
+            dest = f"outputs/{rel}"
+        files[dest] = p.read_bytes()
+
+
 def node_report(state: ProjectState) -> dict:
     import json as _json
-    from pathlib import Path
     from ..storage import github_manager
+
+    quality = state.get("quality_results") or {}
+    hypothesis = state.get("hypothesis_results") or {}
+    model = state.get("model_results") or {}
+    plan = state.get("plan") or {}
 
     report = run_orchestrator(
         "compile_report",
         context={
-            "plan": state.get("plan"),
-            "eda_results": state.get("eda_results"),
-            "model_results": state.get("model_results"),
+            "plan": plan,
+            "quality_results": quality,
+            "hypothesis_results": hypothesis,
+            "model_results": model,
             "review_results": state.get("review_results"),
         },
     )
@@ -294,40 +393,26 @@ def node_report(state: ProjectState) -> dict:
     repo_url = state.get("github_repo")
     if repo_url:
         try:
-            eda = state.get("eda_results") or {}
-            model = state.get("model_results") or {}
-            plan = state.get("plan") or {}
             run_id = state.get("run_id", "unknown")
             run_short = run_id[:8] if isinstance(run_id, str) else "unknown"
 
-            # Arquivos vão direto na raiz da branch — sem subpasta por run.
             files: dict[str, bytes] = {
                 "plan.json": _json.dumps(plan, ensure_ascii=False, indent=2).encode(),
                 "final_report.json": _json.dumps(report, ensure_ascii=False, indent=2).encode(),
-                "eda_summary.json": _json.dumps(
-                    eda.get("summary") or {}, ensure_ascii=False, indent=2
-                ).encode(),
-                "R/01_analyst.R": (eda.get("code") or "").encode(),
             }
-            if model.get("code"):
-                files["R/02_modeler.R"] = model["code"].encode()
+            _collect_stage_artifacts(files, quality, "quality", "R/01_quality.R")
+            _collect_stage_artifacts(files, hypothesis, "hypothesis", "R/02_hypothesis.R")
+            if model:
+                _collect_stage_artifacts(files, model, "ml", "R/03_ml.R")
 
-            # Artefatos do sandbox vão para outputs/ na raiz
-            outputs_dir_str = eda.get("outputs_dir")
-            if outputs_dir_str:
-                outputs_dir = Path(outputs_dir_str)
-                if outputs_dir.exists():
-                    for p in outputs_dir.rglob("*"):
-                        if p.is_file():
-                            rel = p.relative_to(outputs_dir)
-                            files[f"outputs/{rel}"] = p.read_bytes()
-
-            files["README.md"] = _build_run_readme(state, report, eda, model).encode()
+            files["README.md"] = _build_run_readme(state, report).encode()
 
             branch_name = f"run/{run_short}"
+            n_quality_attempts = len((quality.get("attempts") or []))
+            n_hypothesis_attempts = len((hypothesis.get("attempts") or []))
             commit_msg = (
                 f"Cortex run {run_short}: {state.get('workflow_type','?')} "
-                f"({len(eda.get('attempts') or [])} tentativas)"
+                f"(quality={n_quality_attempts} tent., hypothesis={n_hypothesis_attempts} tent.)"
             )
             push_info = github_manager.push_to_branch(
                 repo_url, branch_name, files, commit_message=commit_msg
@@ -345,19 +430,20 @@ def node_report(state: ProjectState) -> dict:
     }
 
 
-def route_after_eda(state: ProjectState) -> str:
-    """
-    Roteia após EDA baseado no tipo de workflow.
-
-    - data_quality: vai direto para report
-    - eda_hypothesis: vai direto para report
-    - full_ml: continua para decide_next → modeling
-    """
+def route_after_quality(state: ProjectState) -> str:
+    """Após qualidade, vai pra hipótese (eda_hypothesis|full_ml) ou direto pro report (data_quality)."""
     workflow_type = state.get("workflow_type", "full_ml")
-    if workflow_type in ("data_quality", "eda_hypothesis"):
-        logger.info("Workflow %s: skipping modeling, going to report.", workflow_type)
+    if workflow_type == "data_quality":
         return "report"
-    return "decide_next"
+    return "hypothesis"
+
+
+def route_after_hypothesis(state: ProjectState) -> str:
+    """Após hipóteses, vai pra modelagem (full_ml) ou report (eda_hypothesis)."""
+    workflow_type = state.get("workflow_type", "full_ml")
+    if workflow_type == "full_ml":
+        return "decide_next"
+    return "report"
 
 
 def route_after_review(state: ProjectState) -> str:
