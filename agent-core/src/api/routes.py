@@ -63,7 +63,6 @@ async def create_project(payload: ProjectCreate) -> ProjectOut:
         config=payload.config,
         client_id=payload.client_id,
         workflow_type=payload.workflow_type.value,
-        primary_language=payload.primary_language.value,
     )
     return ProjectOut(**row)
 
@@ -98,7 +97,6 @@ async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
             "description": project["description"] or "",
             "datasets": payload.datasets,
             "workflow_type": project.get("workflow_type", "full_ml"),
-            "primary_language": project.get("primary_language", "r"),
             "client_id": str(project["client_id"]) if project.get("client_id") else None,
             "github_repo": github_repo,
         },
