@@ -51,12 +51,13 @@ def run_modeler_r(
     sandbox_result = run_code(code=code, language="r", inputs=inputs)
 
     metrics: dict = {}
+    metrics_parse_error: str | None = None
     metrics_path = sandbox_result.outputs_dir / "metrics.json"
     if metrics_path.exists():
         try:
             metrics = json.loads(metrics_path.read_text())
-        except json.JSONDecodeError:
-            metrics = {"_parse_error": True}
+        except json.JSONDecodeError as e:
+            metrics_parse_error = f"metrics.json malformado: {e}"
 
     return {
         "code": code,
@@ -67,6 +68,7 @@ def run_modeler_r(
         "stdout_tail": sandbox_result.stdout[-2000:],
         "stderr_tail": sandbox_result.stderr[-2000:],
         "metrics": metrics,
+        "metrics_parse_error": metrics_parse_error,
         "artifact_paths": [str(p) for p in sandbox_result.artifacts],
         "_usage": {
             "tokens_in": code_result.tokens_in,

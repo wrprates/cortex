@@ -8,6 +8,7 @@ from typing import Any
 from anthropic import Anthropic
 
 from ..config import get_settings
+from .budget import record as _record_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,15 @@ def call_llm(
         if getattr(block, "type", None) == "text":
             text_parts.append(block.text)
 
+    tokens_in = response.usage.input_tokens
+    tokens_out = response.usage.output_tokens
+    _record_tokens(tokens_in, tokens_out)
+
     return AgentCall(
         text="\n".join(text_parts).strip(),
         raw=response,
-        tokens_in=response.usage.input_tokens,
-        tokens_out=response.usage.output_tokens,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
         model=model,
     )
 

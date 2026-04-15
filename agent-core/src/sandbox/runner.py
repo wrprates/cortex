@@ -57,13 +57,13 @@ def run_code(
     (workspace_in_core / "outputs").mkdir(parents=True, exist_ok=True)
     # Permissões: agent-core roda como root, sandbox roda como uid 1000.
     # Sem isso, o R não consegue escrever em ./outputs/ (permission denied).
-    import os as _os, stat as _stat
+    import os as _os
     for sub in ("", "inputs", "outputs"):
         p = workspace_in_core / sub if sub else workspace_in_core
         try:
             _os.chmod(p, 0o777)
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning("chmod 0777 falhou em %s: %s (sandbox pode dar permission denied)", p, e)
 
     # Path visto de dentro do container sandbox (working_dir):
     workspace_in_sandbox = f"{SANDBOX_ROOT_IN_SANDBOX}/{run_id}"
@@ -124,8 +124,8 @@ def run_code(
             exit_code = -1
             try:
                 container.kill()
-            except Exception:
-                pass
+            except Exception as kill_err:
+                logger.warning("container.kill() após timeout falhou: %s", kill_err)
 
         stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
         stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
@@ -159,5 +159,5 @@ def run_code(
         if not keep_workspace:
             try:
                 shutil.rmtree(workspace_in_core, ignore_errors=True)
-            except Exception:
-                pass
+            except Exception as rm_err:
+                logger.warning("cleanup do workspace %s falhou: %s", workspace_in_core, rm_err)

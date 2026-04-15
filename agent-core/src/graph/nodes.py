@@ -125,12 +125,13 @@ def node_eda(state: ProjectState) -> dict:
             parts = path.split("/", 1)
             if len(parts) == 2:
                 key = parts[1]
-                try:
-                    data = minio_client.get_bytes(key)
-                    inputs[os.path.basename(key)] = data
-                    logger.info("Dataset downloaded: %s (%d bytes)", key, len(data))
-                except Exception as e:
-                    logger.error("Failed to download %s: %s", uri, e)
+                data = minio_client.get_bytes(key)
+                inputs[os.path.basename(key)] = data
+                logger.info("Dataset downloaded: %s (%d bytes)", key, len(data))
+            else:
+                raise ValueError(f"URI de dataset inválida (esperado s3://bucket/key): {uri}")
+        else:
+            raise ValueError(f"URI de dataset não suportada (use s3://): {uri}")
 
     context = {
         "plan": state.get("plan"),
