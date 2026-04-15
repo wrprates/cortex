@@ -4,8 +4,6 @@ import logging
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
-from uuid import UUID
 
 from ..config import get_settings
 
@@ -15,11 +13,10 @@ logger = logging.getLogger(__name__)
 async def create_client_repo(client_name: str, private: bool = True) -> str | None:
     """
     Cria um repositório GitHub para o cliente via REST API.
-    Usa /user/repos (conta pessoal) quando GITHUB_ORG == user logado,
-    ou /orgs/{org}/repos quando for uma organização real.
-    Se o repo já existir, retorna a URL existente (idempotente).
+    Idempotente: se já existir, retorna a URL existente.
     """
     import httpx
+
     settings = get_settings()
     token = settings.github_token
     org = settings.github_org
@@ -41,145 +38,132 @@ async def create_client_repo(client_name: str, private: bool = True) -> str | No
     }
 
     async with httpx.AsyncClient(timeout=30) as http:
-        # tenta criar em /user/repos (pessoal) — se ORG for conta pessoal, isso cobre
-        r = await http.post("https://api.github.com/user/repos", headers=headers, json=payload)
+        r = await http.post(
+            "https://api.github.com/user/repos", headers=headers, json=payload
+        )
         if r.status_code == 201:
             url = r.json()["html_url"]
             logger.info("Created GitHub repo: %s", url)
             return url
         if r.status_code == 422 and "already exists" in r.text.lower():
-            url = f"https://github.com/{org}/{repo_name}" if org else f"https://github.com/{repo_name}"
+            url = (
+                f"https://github.com/{org}/{repo_name}"
+                if org
+                else f"https://github.com/{repo_name}"
+            )
             logger.info("Repo already exists (idempotent): %s", url)
             return url
         logger.error("Failed to create repo (%s): %s", r.status_code, r.text[:300])
         return None
 
 
-async def push_analysis(
+def push_to_branch(
     github_repo: str,
-    project_name: str,
+    branch_name: str,
     files: dict[str, bytes],
-) -> bool:
+    *,
+    commit_message: str,
+    base_branch: str = "main",
+) -> dict:
     """
-    Faz push de arquivos para uma subpasta do repositório do cliente.
+    Escreve `files` na raiz de um branch novo em `github_repo` e dá push.
 
-    Args:
-        github_repo: URL do repositório (ex: https://github.com/user/repo)
-        project_name: Nome do projeto (será a subpasta)
-        files: Dict de {nome_arquivo: conteúdo_bytes}
+    - Clona o repo inteiro (sem --depth=1: precisamos de histórico pra branchar).
+    - Faz checkout de `base_branch` e cria `branch_name` a partir dele.
+    - Arquivos são escritos com o path relativo tal como está nas chaves do dict
+      (ex: "R/01_analyst.R", "outputs/report.html", "README.md").
+    - Commita e dá push da branch (set-upstream).
 
     Returns:
-        True se sucesso, False se falhar.
+      {"ok": bool, "branch": str, "error": str|None}
     """
     settings = get_settings()
-    github_token = settings.github_token
+    token = settings.github_token
+    if not token:
+        return {"ok": False, "branch": branch_name, "error": "GITHUB_TOKEN não configurado"}
 
-    if not github_token:
-        logger.error("GITHUB_TOKEN not configured")
-        return False
-
-    project_folder = _sanitize_repo_name(project_name)
+    auth_url = github_repo.replace(
+        "https://github.com/", f"https://{token}@github.com/"
+    )
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        tmppath = Path(tmpdir)
+        repo_path = Path(tmpdir) / "repo"
 
-        try:
-            # Clone repo
-            repo_with_token = github_repo.replace(
-                "https://github.com/",
-                f"https://{github_token}@github.com/"
+        clone = subprocess.run(
+            ["git", "clone", auth_url, str(repo_path)],
+            capture_output=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            err = clone.stderr.decode("utf-8", errors="replace")[-500:]
+            logger.error("git clone falhou: %s", err)
+            return {"ok": False, "branch": branch_name, "error": f"clone: {err}"}
+
+        # Identity (sem fallback: precisamos commitar)
+        subprocess.run(
+            ["git", "config", "user.email", "cortex@cortex.local"],
+            cwd=repo_path, capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Cortex Agent"],
+            cwd=repo_path, capture_output=True, check=True,
+        )
+
+        # Checa base branch e cria branch novo a partir dele
+        checkout_base = subprocess.run(
+            ["git", "checkout", base_branch],
+            cwd=repo_path, capture_output=True,
+        )
+        if checkout_base.returncode != 0:
+            logger.warning(
+                "checkout %s falhou (%s); tentando master como fallback",
+                base_branch, checkout_base.stderr.decode()[-200:],
             )
-            subprocess.run(
-                ["git", "clone", "--depth=1", repo_with_token, "repo"],
-                cwd=tmppath,
-                capture_output=True,
-                timeout=60,
-            )
+            subprocess.run(["git", "checkout", "master"], cwd=repo_path, capture_output=True)
 
-            repo_path = tmppath / "repo"
-            project_path = repo_path / project_folder
+        branch_new = subprocess.run(
+            ["git", "checkout", "-B", branch_name],
+            cwd=repo_path, capture_output=True,
+        )
+        if branch_new.returncode != 0:
+            err = branch_new.stderr.decode("utf-8", errors="replace")[-500:]
+            return {"ok": False, "branch": branch_name, "error": f"checkout -B: {err}"}
 
-            # Create project folder
-            project_path.mkdir(parents=True, exist_ok=True)
+        # Grava arquivos
+        for rel_path, content in files.items():
+            full = repo_path / rel_path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            full.write_bytes(content)
 
-            # Write files
-            for filename, content in files.items():
-                file_path = project_path / filename
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_bytes(content)
+        subprocess.run(["git", "add", "-A"], cwd=repo_path, capture_output=True, check=True)
 
-            # Git config (required pra commitar em ambiente CI-like)
-            subprocess.run(["git", "config", "user.email", "cortex@cortex.local"],
-                           cwd=repo_path, capture_output=True)
-            subprocess.run(["git", "config", "user.name", "Cortex Agent"],
-                           cwd=repo_path, capture_output=True)
+        commit = subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=repo_path, capture_output=True,
+        )
+        if commit.returncode != 0:
+            msg = commit.stdout.decode() + commit.stderr.decode()
+            if "nothing to commit" in msg:
+                logger.info("nada pra commitar em %s — branch igual à base", branch_name)
+                return {"ok": True, "branch": branch_name, "error": None, "no_changes": True}
+            err = msg[-500:]
+            return {"ok": False, "branch": branch_name, "error": f"commit: {err}"}
 
-            # Git add, commit, push
-            subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)
-            subprocess.run(
-                ["git", "commit", "-m", f"Update {project_folder} analysis"],
-                cwd=repo_path,
-                capture_output=True,
-            )
-            result = subprocess.run(
-                ["git", "push"],
-                cwd=repo_path,
-                capture_output=True,
-                timeout=60,
-            )
+        push = subprocess.run(
+            ["git", "push", "-u", "origin", branch_name],
+            cwd=repo_path, capture_output=True, timeout=120,
+        )
+        if push.returncode != 0:
+            err = push.stderr.decode("utf-8", errors="replace")[-500:]
+            return {"ok": False, "branch": branch_name, "error": f"push: {err}"}
 
-            if result.returncode == 0:
-                logger.info("Pushed to %s/%s", github_repo, project_folder)
-                return True
-            else:
-                logger.error("Push failed: %s", result.stderr.decode())
-                return False
-
-        except subprocess.TimeoutExpired:
-            logger.error("Timeout during git operations")
-            return False
-        except Exception as e:
-            logger.exception("Error pushing to GitHub: %s", e)
-            return False
-
-
-async def list_client_projects(github_repo: str) -> list[str]:
-    """
-    Lista subpastas (projetos) no repositório do cliente.
-    """
-    try:
-        # Use gh api to list contents
-        cmd = [
-            "gh", "api",
-            f"repos/{_extract_repo_path(github_repo)}/contents",
-            "--jq", ".[].name",
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-        if result.returncode == 0:
-            return [
-                name.strip()
-                for name in result.stdout.strip().split("\n")
-                if name.strip()
-            ]
-        return []
-    except Exception as e:
-        logger.exception("Error listing projects: %s", e)
-        return []
+        logger.info("push ok: %s branch=%s", github_repo, branch_name)
+        return {"ok": True, "branch": branch_name, "error": None}
 
 
 def _sanitize_repo_name(name: str) -> str:
-    """Converte nome em slug válido para GitHub."""
     import re
+
     slug = name.lower()
     slug = re.sub(r"[^a-z0-9\-]", "-", slug)
     slug = re.sub(r"-+", "-", slug)
     return slug.strip("-")
-
-
-def _extract_repo_path(url: str) -> str:
-    """Extrai 'user/repo' de URL do GitHub."""
-    url = url.rstrip("/")
-    if url.startswith("https://github.com/"):
-        return url.replace("https://github.com/", "")
-    return url
