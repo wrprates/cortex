@@ -5,6 +5,10 @@ from functools import lru_cache
 from typing import Any
 from uuid import UUID
 
+import structlog
+
+from ..agents.budget import TokenBudgetExceeded, run_budget
+from ..config import get_settings
 from ..graph import build_graph
 from ..graph.state import ProjectState
 
@@ -46,13 +50,21 @@ def start_run(
         "review_loop_count": 0,
     }
     logger.warning("start_run BEFORE_INVOKE run_id=%s", run_id)
+    settings = get_settings()
+    structlog.contextvars.bind_contextvars(run_id=str(run_id), project_id=str(project_id))
     try:
-        state = graph.invoke(initial, config=_config(run_id))
+        with run_budget(settings.max_run_tokens):
+            state = graph.invoke(initial, config=_config(run_id))
         logger.warning("start_run AFTER_INVOKE run_id=%s phase=%s", run_id, state.get("current_phase"))
         return _snapshot(state)
+    except TokenBudgetExceeded as e:
+        logger.error("run %s abortado: %s", run_id, e)
+        return {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
     except Exception as e:
         logger.exception("run %s failed: %s", run_id, e)
         return {"status": "failed", "error": str(e)}
+    finally:
+        structlog.contextvars.clear_contextvars()
 
 
 def resume_run(run_id: UUID, decision: str, comments: str | None) -> dict:
@@ -73,8 +85,14 @@ def resume_run(run_id: UUID, decision: str, comments: str | None) -> dict:
         graph.update_state(cfg, {"status": "failed"})
         return {"status": "failed", "reason": "rejected_by_human"}
 
-    state = graph.invoke(None, config=cfg)
-    return _snapshot(state)
+    settings = get_settings()
+    try:
+        with run_budget(settings.max_run_tokens):
+            state = graph.invoke(None, config=cfg)
+        return _snapshot(state)
+    except TokenBudgetExceeded as e:
+        logger.error("resume_run %s abortado: %s", run_id, e)
+        return {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
 
 
 def get_run_state(run_id: UUID) -> dict | None:

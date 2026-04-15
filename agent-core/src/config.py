@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     github_org: str = Field(default="", alias="GITHUB_ORG")
     primary_language: str = Field(default="r", alias="PRIMARY_LANGUAGE")
 
+    max_run_tokens: int = Field(default=500_000, alias="MAX_RUN_TOKENS")
+
     @property
     def postgres_dsn(self) -> str:
         from urllib.parse import quote_plus
