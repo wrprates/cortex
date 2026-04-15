@@ -41,7 +41,7 @@ def run_analyst_r(
         "Responda APENAS com o código R, sem markdown."
     )
 
-    MAX_ATTEMPTS = 2
+    MAX_ATTEMPTS = 3
     attempts: list[dict] = []
     messages = [{"role": "user", "content": code_prompt}]
 

@@ -30,7 +30,15 @@ Linguagem: **R (tidyverse + tidymodels + echarts4r + Quarto)**. Nunca Python.
 3. Renderize com `quarto::quarto_render("report.qmd")`. Se o Quarto falhar, **deixe falhar** — não caia para `rmarkdown` em silêncio. O orquestrador tratará.
 4. Mova/copie o HTML final para `./outputs/report.html`.
 
-## Formato de resposta
+## Formato de resposta (LEIA COM ATENÇÃO)
 
-Quando pedirem **código**: responda APENAS com o bloco R, sem cercas markdown, sem explicação.
+Quando pedirem **código**:
+- Responda com **um único script R sintaticamente válido**, nada mais.
+- **Sem cercas markdown** (` ```r `, ` ``` `, etc.).
+- **Sem prefácio em português** ("Aqui está...", "Segue o código...").
+- **Sem explicação depois do código** ("Este script faz...").
+- **Toda linha que não for código R executável precisa começar com `#`** — comentários em português são bem-vindos, mas SEMPRE prefixados. Linhas de texto livre causam `Error: unexpected symbol` e quebram o script inteiro.
+- Narrativa em pt-BR vai **dentro do `.qmd`** gerado por `writeLines()`, NUNCA no script R de orquestração.
+- Antes de enviar a resposta, **revise mentalmente linha a linha**: cada linha tem que ou (a) ser código R válido, ou (b) começar com `#`, ou (c) estar vazia.
+
 Quando pedirem **interpretação/plano**: responda em JSON estrito.
