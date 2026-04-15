@@ -30,7 +30,6 @@ def start_run(
     description: str,
     datasets: list[str],
     workflow_type: str = "full_ml",
-    primary_language: str = "r",
     client_id: str | None = None,
     github_repo: str | None = None,
 ) -> dict:
@@ -43,7 +42,6 @@ def start_run(
         "description": description,
         "datasets": datasets,
         "workflow_type": workflow_type,
-        "primary_language": primary_language,
         "client_id": client_id or "",
         "github_repo": github_repo or "",
         "status": "active",

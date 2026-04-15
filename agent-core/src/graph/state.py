@@ -13,7 +13,6 @@ class ProjectState(TypedDict, total=False):
 
     # Workflow configuration
     workflow_type: str  # "data_quality" | "eda_hypothesis" | "full_ml"
-    primary_language: str  # "r" | "python"
     client_id: str  # UUID do cliente
     github_repo: str  # URL do repo do cliente (se houver)
 

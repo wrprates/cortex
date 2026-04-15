@@ -3,9 +3,7 @@ from __future__ import annotations
 import logging
 
 from ..agents import (
-    run_analyst,
     run_analyst_r,
-    run_modeler,
     run_modeler_r,
     run_orchestrator,
     run_reviewer,
@@ -390,26 +388,17 @@ def node_decide_next(state: ProjectState) -> dict:
 
 
 def node_modeling(state: ProjectState) -> dict:
-    language = state.get("primary_language", "r")
-
     context = {
         "plan": state.get("plan"),
         "quality_summary": (state.get("quality_results") or {}).get("summary"),
         "hypothesis_summary": (state.get("hypothesis_results") or {}).get("summary"),
     }
 
-    if language == "r":
-        result = run_modeler_r(
-            task="Treine e compare modelos baseline conforme o plano.",
-            context=context,
-            final_training=False,
-        )
-    else:
-        result = run_modeler(
-            task="Treine e compare modelos baseline conforme o plano.",
-            context=context,
-            final_training=False,
-        )
+    result = run_modeler_r(
+        task="Treine e compare modelos baseline conforme o plano.",
+        context=context,
+        final_training=False,
+    )
 
     return {
         "model_results": result,

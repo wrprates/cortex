@@ -71,14 +71,14 @@ async def insert_project(
     config: dict[str, Any],
     client_id: UUID | None = None,
     workflow_type: str = "full_ml",
-    primary_language: str = "r",
 ) -> dict:
+    # primary_language é R fixo desde v0.5 — usa o DEFAULT 'r' da coluna.
     async with session() as s:
         result = await s.execute(
             text(
                 """
-                INSERT INTO projects (name, description, client_id, workflow_type, primary_language, config)
-                VALUES (:name, :description, :client_id, :workflow_type, :primary_language, CAST(:config AS JSONB))
+                INSERT INTO projects (name, description, client_id, workflow_type, config)
+                VALUES (:name, :description, :client_id, :workflow_type, CAST(:config AS JSONB))
                 RETURNING id, name, description, client_id, workflow_type, primary_language, status, config, created_at, updated_at
                 """
             ),
@@ -87,7 +87,6 @@ async def insert_project(
                 "description": description,
                 "client_id": client_id,
                 "workflow_type": workflow_type,
-                "primary_language": primary_language,
                 "config": _json(config),
             },
         )

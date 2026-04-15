@@ -12,11 +12,6 @@ class WorkflowType(str, Enum):
     FULL_ML = "full_ml"
 
 
-class PrimaryLanguage(str, Enum):
-    R = "r"
-    PYTHON = "python"
-
-
 class ClientCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     github_repo: str | None = None
@@ -37,7 +32,6 @@ class ProjectCreate(BaseModel):
     description: str | None = None
     client_id: UUID | None = None
     workflow_type: WorkflowType = WorkflowType.FULL_ML
-    primary_language: PrimaryLanguage = PrimaryLanguage.R
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -47,7 +41,7 @@ class ProjectOut(BaseModel):
     description: str | None
     client_id: UUID | None
     workflow_type: str
-    primary_language: str
+    primary_language: str | None = None  # mantido p/ backward-compat com registros antigos
     status: str
     config: dict[str, Any]
     created_at: datetime
