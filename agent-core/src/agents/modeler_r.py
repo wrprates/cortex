@@ -12,7 +12,12 @@ Linguagem: R (tidymodels stack).
 Objetivo: feature engineering, treinar modelos, comparar métricas, selecionar o melhor.
 
 Ao gerar código R:
-- Assuma dados em ./inputs/.
+- Assuma dados em ./inputs/. Essa pasta contém os datasets originais E os artefatos
+  publicados pelas fases anteriores (ex.: `quality_analysis.rds`, `quality_summary.json`,
+  `hypothesis_analysis.rds`, eventual `*_clean.parquet`). Prefira o dataset mais trabalhado
+  disponível (parquet limpo > RDS da fase quality > CSV bruto).
+- Comece o script com `print(list.files("./inputs"))` para descobrir em runtime o que
+  existe, em vez de chumbar nomes que podem não estar presentes.
 - Use train/validation/test splits apropriados (nunca vaze dados do teste).
 - Use tidymodels para modelagem: rsample, recipes, parsnip, workflows, tune, yardstick.
 - Registre métricas (accuracy, AUC, RMSE, F1, etc.) em ./outputs/metrics.json usando jsonlite::write_json().
@@ -20,7 +25,7 @@ Ao gerar código R:
 - Salve tabela comparativa em ./outputs/leaderboard.csv.
 - NÃO acesse rede. NÃO instale pacotes.
 
-Bibliotecas disponíveis: tidyverse, tidymodels, ranger, xgboost, jsonlite, data.table.
+Bibliotecas disponíveis: tidyverse, tidymodels, ranger, xgboost, jsonlite, data.table, arrow.
 
 Responda APENAS com código R puro, sem cercas markdown, sem explicação.
 """
@@ -48,7 +53,7 @@ def run_modeler_r(
     )
     code = _strip(code_result.text)
 
-    sandbox_result = run_code(code=code, language="r", inputs=inputs)
+    sandbox_result = run_code(code=code, language="r", inputs=inputs, keep_workspace=True)
 
     metrics: dict = {}
     metrics_parse_error: str | None = None
@@ -70,6 +75,7 @@ def run_modeler_r(
         "metrics": metrics,
         "metrics_parse_error": metrics_parse_error,
         "artifact_paths": [str(p) for p in sandbox_result.artifacts],
+        "outputs_dir": str(sandbox_result.outputs_dir),
         "_usage": {
             "tokens_in": code_result.tokens_in,
             "tokens_out": code_result.tokens_out,

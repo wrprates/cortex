@@ -37,6 +37,98 @@ def _download_inputs(datasets: list[str]) -> dict[str, bytes]:
     return inputs
 
 
+# Extensões que viajam no bus entre fases (dados estruturados; exclui HTML/QMD
+# que são relatórios pesados e não servem de input para a próxima fase).
+_HANDOFF_EXTS = {".parquet", ".rds", ".csv", ".json", ".feather", ".arrow"}
+
+
+def _publish_stage_artifacts(
+    run_id: str, stage: str, outputs_dir_str: str | None
+) -> dict[str, str]:
+    """
+    Publica artefatos "de handoff" da stage no MinIO sob a chave
+    `stage_outputs/<run_id>/<stage>/<filename>` e devolve {filename: s3_uri}.
+
+    Só sobe arquivos com extensão em `_HANDOFF_EXTS` — o relatório HTML
+    permanece apenas no artefato do branch do run (via `_collect_stage_artifacts`).
+    """
+    if not outputs_dir_str:
+        return {}
+
+    from pathlib import Path
+
+    from ..storage import minio_client
+
+    outputs_dir = Path(outputs_dir_str)
+    if not outputs_dir.exists():
+        return {}
+
+    published: dict[str, str] = {}
+    for p in outputs_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in _HANDOFF_EXTS:
+            continue
+        # summary.json é renomeado para deixar claro de qual stage veio quando
+        # múltiplos summaries coexistirem no ./inputs/ da próxima fase.
+        if p.name == "summary.json":
+            dest_name = f"{stage}_summary.json"
+        elif p.name == "analysis.rds":
+            dest_name = f"{stage}_analysis.rds"
+        else:
+            dest_name = p.name
+        key = f"stage_outputs/{run_id}/{stage}/{dest_name}"
+        try:
+            uri = minio_client.put_bytes(key, p.read_bytes())
+            published[dest_name] = uri
+            logger.info("stage_artifact published: %s", uri)
+        except Exception as e:
+            logger.exception("falha publicando %s: %s", key, e)
+    return published
+
+
+def _collect_stage_inputs(state: ProjectState) -> dict[str, bytes]:
+    """
+    Baixa datasets originais + artefatos das fases anteriores publicados no bus.
+
+    Retorna dict{filename: bytes} pronto pra passar como `inputs=` do sandbox.
+    Se dois arquivos colidirem (ex.: dataset original e artefato chamado igual),
+    o artefato da stage mais recente sobrescreve — é o comportamento desejado
+    já que fases posteriores devem ver o estado mais trabalhado do dado.
+    """
+    from ..storage import minio_client
+
+    inputs = _download_inputs(state.get("datasets", []))
+
+    stage_artifacts = state.get("stage_artifacts") or {}
+    for stage, files in stage_artifacts.items():
+        for filename, uri in (files or {}).items():
+            if not uri.startswith("s3://"):
+                logger.warning("URI inválida no bus (%s/%s): %s", stage, filename, uri)
+                continue
+            path = uri[5:]
+            parts = path.split("/", 1)
+            if len(parts) != 2:
+                continue
+            key = parts[1]
+            try:
+                inputs[filename] = minio_client.get_bytes(key)
+                logger.info("stage_artifact fetched: %s -> ./inputs/%s", uri, filename)
+            except Exception as e:
+                logger.exception("falha baixando artefato %s: %s", uri, e)
+    return inputs
+
+
+def _merge_stage_artifacts(
+    existing: dict | None, stage: str, published: dict[str, str]
+) -> dict:
+    """Merge imutável: devolve novo dict com a stage atualizada."""
+    merged = dict(existing or {})
+    if published:
+        merged[stage] = published
+    return merged
+
+
 def _fmt_finding(f) -> str:
     if isinstance(f, dict):
         obs = f.get("finding") or ""
@@ -310,7 +402,7 @@ _STAGE_TASK = {
 def _run_analyst_stage(state: ProjectState, stage: str) -> dict:
     """Roda o analyst_r para a stage dada; consulta decision_maker em caso de falha."""
     datasets = state.get("datasets", [])
-    inputs = _download_inputs(datasets)
+    inputs = _collect_stage_inputs(state)
 
     context = {
         "plan": state.get("plan"),
@@ -365,12 +457,30 @@ def _run_analyst_stage(state: ProjectState, stage: str) -> dict:
 
 def node_quality(state: ProjectState) -> dict:
     result = _run_analyst_stage(state, "quality")
-    return {"quality_results": result, "current_phase": "quality"}
+    published = _publish_stage_artifacts(
+        state.get("run_id", "unknown"), "quality", result.get("outputs_dir")
+    )
+    return {
+        "quality_results": result,
+        "current_phase": "quality",
+        "stage_artifacts": _merge_stage_artifacts(
+            state.get("stage_artifacts"), "quality", published
+        ),
+    }
 
 
 def node_hypothesis(state: ProjectState) -> dict:
     result = _run_analyst_stage(state, "hypothesis")
-    return {"hypothesis_results": result, "current_phase": "hypothesis"}
+    published = _publish_stage_artifacts(
+        state.get("run_id", "unknown"), "hypothesis", result.get("outputs_dir")
+    )
+    return {
+        "hypothesis_results": result,
+        "current_phase": "hypothesis",
+        "stage_artifacts": _merge_stage_artifacts(
+            state.get("stage_artifacts"), "hypothesis", published
+        ),
+    }
 
 
 def node_decide_next(state: ProjectState) -> dict:
@@ -388,22 +498,32 @@ def node_decide_next(state: ProjectState) -> dict:
 
 
 def node_modeling(state: ProjectState) -> dict:
+    inputs = _collect_stage_inputs(state)
     context = {
         "plan": state.get("plan"),
         "quality_summary": (state.get("quality_results") or {}).get("summary"),
         "hypothesis_summary": (state.get("hypothesis_results") or {}).get("summary"),
+        "available_inputs": list(inputs.keys()),
     }
 
     result = run_modeler_r(
         task="Treine e compare modelos baseline conforme o plano.",
         context=context,
+        inputs=inputs,
         final_training=False,
+    )
+
+    published = _publish_stage_artifacts(
+        state.get("run_id", "unknown"), "ml", result.get("outputs_dir")
     )
 
     return {
         "model_results": result,
         "current_phase": "modeling",
         "status": "waiting_human",
+        "stage_artifacts": _merge_stage_artifacts(
+            state.get("stage_artifacts"), "ml", published
+        ),
     }
 
 
