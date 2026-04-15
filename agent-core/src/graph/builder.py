@@ -20,6 +20,7 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
     """
     g = StateGraph(ProjectState)
 
+    g.add_node("probe", nodes.node_probe)
     g.add_node("planning", nodes.node_plan)
     g.add_node("eda", nodes.node_eda)
     g.add_node("decide_next", nodes.node_decide_next)
@@ -27,7 +28,8 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
     g.add_node("review", nodes.node_review)
     g.add_node("report", nodes.node_report)
 
-    g.add_edge(START, "planning")
+    g.add_edge(START, "probe")
+    g.add_edge("probe", "planning")
     g.add_edge("planning", "eda")
 
     # Roteamento condicional após EDA baseado em workflow_type

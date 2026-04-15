@@ -17,9 +17,10 @@ class ProjectState(TypedDict, total=False):
     client_id: str  # UUID do cliente
     github_repo: str  # URL do repo do cliente (se houver)
 
-    current_phase: str  # "planning" | "eda" | "modeling" | "review" | "reporting" | "done"
+    current_phase: str  # "probing" | "planning" | "eda" | "modeling" | "review" | "reporting" | "done"
     datasets: list[str]
 
+    dataset_profile: dict  # output de node_probe: shape, tipos, NA%, cardinalidade
     eda_results: dict
     model_results: dict
     review_results: dict

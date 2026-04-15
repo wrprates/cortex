@@ -10,11 +10,33 @@ from ..agents import (
     run_orchestrator,
     run_reviewer,
 )
+from ..agents.decision_maker import run_decision_maker
+from .probe import run_probe
 from .state import ProjectState
 
 logger = logging.getLogger(__name__)
 
 MAX_REVIEW_LOOPS = 2
+
+
+def _download_inputs(datasets: list[str]) -> dict[str, bytes]:
+    """Baixa datasets s3:// do MinIO e retorna {filename: bytes}. Raise em URI inválida ou erro."""
+    from ..storage import minio_client
+    import os
+
+    inputs: dict[str, bytes] = {}
+    for uri in datasets:
+        if not uri.startswith("s3://"):
+            raise ValueError(f"URI de dataset não suportada (use s3://): {uri}")
+        path = uri[5:]
+        parts = path.split("/", 1)
+        if len(parts) != 2:
+            raise ValueError(f"URI de dataset inválida (esperado s3://bucket/key): {uri}")
+        key = parts[1]
+        data = minio_client.get_bytes(key)
+        inputs[os.path.basename(key)] = data
+        logger.info("Dataset downloaded: %s (%d bytes)", key, len(data))
+    return inputs
 
 
 def _build_run_readme(state, report, eda, model) -> str:
@@ -95,6 +117,22 @@ def _loop_run(coro):
         loop.close()
 
 
+def node_probe(state: ProjectState) -> dict:
+    """
+    Inspeciona os datasets antes de planejar. Produz dataset_profile usado pelo
+    orchestrator para julgar viabilidade com informação real, não só do briefing.
+    """
+    datasets = state.get("datasets", [])
+    if not datasets:
+        logger.warning("node_probe: sem datasets no state, pulando probe.")
+        return {"dataset_profile": {"datasets": [], "_skipped": "no_datasets"}, "current_phase": "probing"}
+
+    inputs = _download_inputs(datasets)
+    profile = run_probe(inputs)
+    logger.info("probe ok: %d datasets perfilados", len(profile.get("datasets", [])))
+    return {"dataset_profile": profile, "current_phase": "probing"}
+
+
 def node_plan(state: ProjectState) -> dict:
     workflow_type = state.get("workflow_type", "full_ml")
     plan = run_orchestrator(
@@ -103,55 +141,66 @@ def node_plan(state: ProjectState) -> dict:
             "description": state.get("description"),
             "datasets": state.get("datasets", []),
             "workflow_type": workflow_type,
+            "dataset_profile": state.get("dataset_profile"),
         },
     )
     return {"plan": plan, "current_phase": "planning", "status": "waiting_human"}
 
 
 def node_eda(state: ProjectState) -> dict:
-    from ..storage import minio_client
-    import os
-
     language = state.get("primary_language", "r")
     workflow_type = state.get("workflow_type", "full_ml")
     datasets = state.get("datasets", [])
 
-    # Baixa datasets s3:// do MinIO pra passar como inputs ao sandbox
-    inputs: dict[str, bytes] = {}
-    for uri in datasets:
-        if uri.startswith("s3://"):
-            # s3://bucket/key...  → pega só o key (remove prefixo bucket)
-            path = uri[5:]
-            parts = path.split("/", 1)
-            if len(parts) == 2:
-                key = parts[1]
-                data = minio_client.get_bytes(key)
-                inputs[os.path.basename(key)] = data
-                logger.info("Dataset downloaded: %s (%d bytes)", key, len(data))
-            else:
-                raise ValueError(f"URI de dataset inválida (esperado s3://bucket/key): {uri}")
-        else:
-            raise ValueError(f"URI de dataset não suportada (use s3://): {uri}")
+    inputs = _download_inputs(datasets)
 
     context = {
         "plan": state.get("plan"),
         "datasets": datasets,
         "available_inputs": list(inputs.keys()),
+        "dataset_profile": state.get("dataset_profile"),
     }
 
-    if language == "r":
-        result = run_analyst_r(
-            task="Execute EDA conforme o plano aprovado.",
-            context=context,
-            inputs=inputs,
-            workflow_type=workflow_type,
+    def _run_analyst(extra_guidance: str = "") -> dict:
+        task = "Execute EDA conforme o plano aprovado."
+        if extra_guidance:
+            task = f"{task}\n\nOrientação do decision_maker:\n{extra_guidance}"
+        if language == "r":
+            return run_analyst_r(
+                task=task, context=context, inputs=inputs, workflow_type=workflow_type
+            )
+        return run_analyst(task=task, context=context, inputs=inputs)
+
+    result = _run_analyst()
+
+    # Se falhou após os retries internos do analyst, consulta decision_maker.
+    if not result.get("success"):
+        decision = run_decision_maker(
+            failing_agent="analyst_r" if language == "r" else "analyst",
+            objective="EDA conforme plano aprovado",
+            attempts=result.get("attempts", []),
+            stderr_tail=result.get("stderr_tail", ""),
+            stdout_tail=result.get("stdout_tail", ""),
+            profile=state.get("dataset_profile"),
         )
-    else:
-        result = run_analyst(
-            task="Execute EDA conforme o plano aprovado.",
-            context=context,
-            inputs=inputs,
-        )
+        logger.warning("decision_maker: %s — %s", decision.get("action"), decision.get("rationale"))
+
+        action = decision.get("action")
+        if action == "retry_with_guidance":
+            result_retry = _run_analyst(extra_guidance=decision.get("guidance", ""))
+            result_retry["_decision"] = decision
+            result = result_retry
+        elif action == "skip":
+            result["_decision"] = decision
+            result["skipped"] = True
+            result["skip_reason"] = decision.get("rationale", "infeasible")
+        elif action == "abort":
+            raise RuntimeError(
+                f"EDA abortado pelo decision_maker: {decision.get('rationale')}"
+            )
+        else:
+            logger.error("decision_maker retornou action desconhecida: %s", action)
+            result["_decision"] = decision
 
     return {"eda_results": result, "current_phase": "eda"}
 
