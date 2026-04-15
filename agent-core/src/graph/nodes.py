@@ -178,6 +178,110 @@ def node_probe(state: ProjectState) -> dict:
     return {"dataset_profile": profile, "current_phase": "probing"}
 
 
+_STAGES_BY_WORKFLOW = {
+    "data_quality": ["quality"],
+    "eda_hypothesis": ["quality", "hypothesis"],
+    "full_ml": ["quality", "hypothesis", "ml"],
+}
+
+
+def _planned_stages(workflow_type: str) -> list[str]:
+    return _STAGES_BY_WORKFLOW.get(workflow_type, ["quality", "hypothesis", "ml"])
+
+
+def _issue_body_for_stage(stage: str, plan: dict, workflow_type: str) -> str:
+    """Corpo da issue de uma stage — mostra objetivos e contexto do plano."""
+    phases = plan.get("phases") or []
+    relevant_names = {
+        "quality": ("quality", "qualidade"),
+        "hypothesis": ("hypothesis", "hipótese", "eda"),
+        "ml": ("model", "ml", "machine learning"),
+    }.get(stage, (stage,))
+    matches = [
+        p for p in phases
+        if any(k in (p.get("name", "").lower()) for k in relevant_names)
+    ]
+    lines = [
+        f"## Etapa: **{stage}**",
+        "",
+        f"_Workflow do projeto: `{workflow_type}`_",
+        "",
+        "### Objetivos desta etapa (derivados do plano)",
+    ]
+    if matches:
+        for p in matches:
+            nm = p.get("name", "?")
+            obj = p.get("objective", "")
+            rat = p.get("rationale", "")
+            lines.append(f"- **{nm}** — {obj}")
+            if rat:
+                lines.append(f"  _{rat}_")
+    else:
+        lines.append("_Nenhuma fase do plano casou com esta etapa; "
+                     "verifique viabilidade._")
+    lines += [
+        "",
+        "### Entregáveis esperados no branch do run",
+        f"- `R/0N_{stage}.R` — código fonte",
+        f"- `outputs/{stage}.html` — relatório Quarto interativo",
+        f"- `outputs/{stage}_summary.json` — sumário estruturado",
+        "",
+        "_Issue gerada automaticamente pelo Cortex após aprovação do plano. "
+        "Será fechada quando o PR do run for mergeado._",
+    ]
+    return "\n".join(lines)
+
+
+def _create_plan_issues(state: ProjectState, plan: dict) -> tuple[dict, int | None]:
+    """
+    Cria milestone (1 por projeto) e issues (1 por stage). Idempotente no milestone.
+
+    Retorna (plan_issues, milestone_number). plan_issues = {stage: issue_number}.
+    Falhas são logadas mas NÃO levantam — gestão no GitHub é valor agregado,
+    não deve quebrar o run.
+    """
+    from ..storage import github_pm
+
+    repo_url = state.get("github_repo")
+    if not repo_url:
+        return {}, None
+
+    workflow_type = state.get("workflow_type", "full_ml")
+    stages = _planned_stages(workflow_type)
+    project_id = state.get("project_id", "?")
+    run_id = state.get("run_id", "?")
+    ms_title = f"Projeto {project_id[:8] if isinstance(project_id, str) else '?'}"
+    ms_desc = (
+        f"Milestone do projeto `{project_id}`. Reúne as etapas de ciência de "
+        "dados executadas pelo Cortex."
+    )
+
+    try:
+        milestone_number = github_pm.ensure_milestone(repo_url, ms_title, ms_desc)
+    except Exception as e:
+        logger.exception("ensure_milestone falhou: %s", e)
+        milestone_number = None
+
+    plan_issues: dict[str, int] = {}
+    for stage in stages:
+        title = f"[{stage}] run {run_id[:8] if isinstance(run_id, str) else '?'}"
+        body = _issue_body_for_stage(stage, plan, workflow_type)
+        try:
+            num = github_pm.create_issue(
+                repo_url,
+                title=title,
+                body=body,
+                milestone=milestone_number,
+                labels=[f"stage:{stage}", "cortex"],
+            )
+            if num is not None:
+                plan_issues[stage] = num
+        except Exception as e:
+            logger.exception("create_issue(%s) falhou: %s", stage, e)
+
+    return plan_issues, milestone_number
+
+
 def node_plan(state: ProjectState) -> dict:
     workflow_type = state.get("workflow_type", "full_ml")
     plan = run_orchestrator(
@@ -189,7 +293,14 @@ def node_plan(state: ProjectState) -> dict:
             "dataset_profile": state.get("dataset_profile"),
         },
     )
-    return {"plan": plan, "current_phase": "planning", "status": "waiting_human"}
+    plan_issues, milestone_number = _create_plan_issues(state, plan)
+    return {
+        "plan": plan,
+        "plan_issues": plan_issues,
+        "milestone_number": milestone_number,
+        "current_phase": "planning",
+        "status": "waiting_human",
+    }
 
 
 _STAGE_TASK = {
@@ -369,6 +480,82 @@ def _collect_stage_artifacts(
         files[dest] = p.read_bytes()
 
 
+def _open_run_pr(
+    state: ProjectState, report: dict, branch_name: str, run_short: str
+) -> dict | None:
+    """Abre PR run/xxx → main com 'Closes #N' para cada issue de stage, e comenta."""
+    from ..storage import github_pm
+
+    repo_url = state.get("github_repo")
+    if not repo_url:
+        return None
+
+    plan_issues = state.get("plan_issues") or {}
+    workflow = state.get("workflow_type", "?")
+    title = f"Cortex run {run_short} ({workflow})"
+
+    stages_that_ran: list[str] = []
+    if state.get("quality_results"):
+        stages_that_ran.append("quality")
+    if state.get("hypothesis_results"):
+        stages_that_ran.append("hypothesis")
+    if state.get("model_results"):
+        stages_that_ran.append("ml")
+
+    closes_lines = [
+        f"Closes #{plan_issues[s]}" for s in stages_that_ran if s in plan_issues
+    ]
+    exec_sum = (report.get("executive_summary") or "_(vazio)_").strip()
+    quality_verdict = report.get("quality_verdict", "n/a")
+
+    body_parts = [
+        *closes_lines,
+        "",
+        f"**Workflow:** `{workflow}` · **Veredito de qualidade:** `{quality_verdict}`",
+        "",
+        "## Resumo Executivo",
+        exec_sum,
+        "",
+        "## Entregáveis neste branch",
+        "- `outputs/*.html` — relatórios Quarto interativos por etapa",
+        "- `R/0N_<etapa>.R` — código fonte",
+        "- `outputs/*_summary.json` — sumário estruturado",
+        "",
+        f"_Gerado automaticamente pelo Cortex. Run `{state.get('run_id')}`._",
+    ]
+    body = "\n".join(body_parts)
+
+    try:
+        pr = github_pm.create_pr(
+            repo_url, head=branch_name, base="main", title=title, body=body
+        )
+    except Exception as e:
+        logger.exception("create_pr falhou: %s", e)
+        return {"status": "error", "error": str(e)}
+
+    if pr is None:
+        return {"status": "failed"}
+
+    # Comentário adicional com findings (o corpo já tem exec summary).
+    findings = report.get("key_findings") or []
+    recommendations = report.get("recommendations") or []
+    if findings or recommendations:
+        parts = ["## 🔑 Principais Achados"]
+        for f in findings[:10]:
+            parts.append(f"- {_fmt_finding(f)}")
+        if recommendations:
+            parts += ["", "## 🎯 Recomendações"]
+            for r in recommendations[:10]:
+                parts.append(f"- {_fmt_recommendation(r)}")
+        try:
+            github_pm.comment_pr(repo_url, pr["number"], "\n".join(parts))
+        except Exception as e:
+            logger.warning("comment_pr falhou: %s", e)
+
+    pr["status"] = "opened"
+    return pr
+
+
 def node_report(state: ProjectState) -> dict:
     import json as _json
     from ..storage import github_manager
@@ -390,6 +577,7 @@ def node_report(state: ProjectState) -> dict:
     )
 
     push_info: dict = {"status": "skipped"}
+    pr_info: dict | None = None
     repo_url = state.get("github_repo")
     if repo_url:
         try:
@@ -418,11 +606,17 @@ def node_report(state: ProjectState) -> dict:
                 repo_url, branch_name, files, commit_message=commit_msg
             )
             push_info["status"] = "pushed" if push_info.get("ok") else "failed"
+
+            # PR run/xxx → main + comentário com exec summary.
+            if push_info.get("ok"):
+                pr_info = _open_run_pr(state, report, branch_name, run_short)
         except Exception as e:
             logger.exception("github push error: %s", e)
             push_info = {"status": f"error:{type(e).__name__}", "error": str(e)}
 
     report["_github_push"] = push_info
+    if pr_info is not None:
+        report["_github_pr"] = pr_info
     return {
         "final_report": report,
         "current_phase": "done",

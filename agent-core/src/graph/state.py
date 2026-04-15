@@ -21,6 +21,8 @@ class ProjectState(TypedDict, total=False):
     datasets: list[str]
 
     dataset_profile: dict  # output de node_probe: shape, tipos, NA%, cardinalidade
+    plan_issues: dict  # {stage_name: issue_number} — issues GitHub criadas em node_plan
+    milestone_number: int  # milestone do projeto no repo (idempotente por projeto)
     quality_results: dict
     hypothesis_results: dict
     model_results: dict
