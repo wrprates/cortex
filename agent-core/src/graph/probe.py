@@ -94,28 +94,35 @@ def run_probe(inputs: dict[str, bytes]) -> dict:
     Retorna o dict decodificado de `profile.json` com chave `datasets`.
     Se o probe falhar (exit != 0 ou arquivo ausente), inclui `_probe_error`.
     """
+    # keep_workspace=True porque precisamos ler profile.json depois do retorno
+    # de run_code (caso contrário o finally do runner limpa o dir antes).
+    import shutil
+
     result = run_code(
         code=PROBE_R_SCRIPT,
         language="r",
         inputs=inputs,
         timeout=120,
-        keep_workspace=False,
+        keep_workspace=True,
     )
 
-    profile_path = result.outputs_dir / "profile.json"
-    if result.exit_code != 0 or not profile_path.exists():
-        logger.error(
-            "probe falhou: exit=%s stderr=%s",
-            result.exit_code,
-            result.stderr[-800:],
-        )
-        return {
-            "datasets": [],
-            "_probe_error": {
-                "exit_code": result.exit_code,
-                "stderr_tail": result.stderr[-800:],
-                "timed_out": result.timed_out,
-            },
-        }
+    try:
+        profile_path = result.outputs_dir / "profile.json"
+        if result.exit_code != 0 or not profile_path.exists():
+            logger.error(
+                "probe falhou: exit=%s stderr=%s",
+                result.exit_code,
+                result.stderr[-800:],
+            )
+            return {
+                "datasets": [],
+                "_probe_error": {
+                    "exit_code": result.exit_code,
+                    "stderr_tail": result.stderr[-800:],
+                    "timed_out": result.timed_out,
+                },
+            }
 
-    return json.loads(profile_path.read_text())
+        return json.loads(profile_path.read_text())
+    finally:
+        shutil.rmtree(result.outputs_dir.parent, ignore_errors=True)
