@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from ..agents import (
     run_analyst_r,
     run_modeler_r,
     run_orchestrator,
+    run_quality_dispatcher,
     run_reviewer,
 )
 from ..agents.decision_maker import run_decision_maker
@@ -456,7 +458,27 @@ def _run_analyst_stage(state: ProjectState, stage: str) -> dict:
 
 
 def node_quality(state: ProjectState) -> dict:
-    result = _run_analyst_stage(state, "quality")
+    # Feature flag: QUALITY_DISPATCHER=1 usa pipeline determinístico
+    # (classificação Python + R templatizado, sem LLM). Se desativada,
+    # cai no fluxo antigo de geração LLM + retries (analyst_r).
+    use_dispatcher = os.getenv("QUALITY_DISPATCHER", "0") == "1"
+    if use_dispatcher and state.get("dataset_profile"):
+        inputs = _collect_stage_inputs(state)
+        try:
+            result = run_quality_dispatcher(
+                dataset_profile=state["dataset_profile"],
+                inputs=inputs,
+            )
+            logger.info("node_quality: dispatcher determinístico — success=%s",
+                        result.get("success"))
+        except Exception as e:
+            # Em caso de problema no dispatcher, voltamos ao fluxo LLM
+            # para não travar o run. Loga o motivo.
+            logger.exception("quality_dispatcher falhou, caindo no analyst_r: %s", e)
+            result = _run_analyst_stage(state, "quality")
+    else:
+        result = _run_analyst_stage(state, "quality")
+
     published = _publish_stage_artifacts(
         state.get("run_id", "unknown"), "quality", result.get("outputs_dir")
     )
