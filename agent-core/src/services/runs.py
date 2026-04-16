@@ -67,11 +67,13 @@ def start_run(
 
 def resume_run(run_id: UUID, decision: str, comments: str | None) -> dict:
     """Retoma o grafo após decisão humana (approved|rejected)."""
+    logger.warning("resume_run ENTRY run_id=%s decision=%s", run_id, decision)
     graph = _graph()
     cfg = _config(run_id)
 
     snapshot = graph.get_state(cfg)
     if snapshot is None:
+        logger.warning("resume_run %s: snapshot not found", run_id)
         return {"status": "not_found"}
 
     human_log = list(snapshot.values.get("human_decisions", []))
@@ -84,13 +86,20 @@ def resume_run(run_id: UUID, decision: str, comments: str | None) -> dict:
         return {"status": "failed", "reason": "rejected_by_human"}
 
     settings = get_settings()
+    logger.warning("resume_run BEFORE_INVOKE run_id=%s phase=%s", run_id, snapshot.values.get("current_phase"))
     try:
         with run_budget(settings.max_run_tokens):
             state = graph.invoke(None, config=cfg)
+        logger.warning("resume_run AFTER_INVOKE run_id=%s phase=%s", run_id, state.get("current_phase"))
         return _snapshot(state)
     except TokenBudgetExceeded as e:
         logger.error("resume_run %s abortado: %s", run_id, e)
         return {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
+    except Exception as e:
+        # Sem esse except, qualquer exceção morre silenciosa no thread daemon
+        # (routes.py cria o thread com daemon=True).
+        logger.exception("resume_run %s failed: %s", run_id, e)
+        return {"status": "failed", "error": str(e)}
 
 
 def get_run_state(run_id: UUID) -> dict | None:
