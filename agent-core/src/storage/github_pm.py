@@ -148,3 +148,73 @@ def comment_pr(repo_url: str, pr_number: int, body: str) -> bool:
             "falha comentando PR #%s: %s %s", pr_number, r.status_code, r.text[:300]
         )
         return False
+
+
+def close_issue(
+    repo_url: str, number: int, reason: str = "completed"
+) -> bool:
+    """
+    Fecha uma issue explicitamente. `reason` aceita 'completed' ou 'not_planned'.
+
+    Usado para garantir fechamento fase-a-fase, sem depender do merge final
+    de um PR com `Closes #N` (que só dispara após merge pra main).
+    """
+    repo = _repo_path(repo_url)
+    with _client() as http:
+        r = http.patch(
+            f"{_BASE}/repos/{repo}/issues/{number}",
+            json={"state": "closed", "state_reason": reason},
+        )
+        if r.status_code == 200:
+            logger.info("issue fechada: #%s (%s)", number, reason)
+            return True
+        logger.error(
+            "falha fechando issue #%s: %s %s", number, r.status_code, r.text[:300]
+        )
+        return False
+
+
+def update_pr_body(repo_url: str, pr_number: int, body: str) -> bool:
+    """Atualiza corpo do PR (útil pra refletir progresso do run)."""
+    repo = _repo_path(repo_url)
+    with _client() as http:
+        r = http.patch(
+            f"{_BASE}/repos/{repo}/pulls/{pr_number}", json={"body": body}
+        )
+        return r.status_code == 200
+
+
+def mark_pr_ready(repo_url: str, pr_number: int) -> bool:
+    """
+    Tira o PR de draft via GraphQL (REST não expõe o toggle de ready).
+
+    Uso: ao fim do run (node_report), transforma o draft PR em ready-for-review.
+    Retorna True em sucesso, False se falhar (não é crítico — log só).
+    """
+    # Descobre o node_id do PR
+    repo = _repo_path(repo_url)
+    with _client() as http:
+        r = http.get(f"{_BASE}/repos/{repo}/pulls/{pr_number}")
+        if r.status_code != 200:
+            logger.error("mark_pr_ready: falha buscando PR #%s: %s", pr_number, r.status_code)
+            return False
+        node_id = r.json().get("node_id")
+        if not node_id:
+            return False
+
+        mutation = """
+        mutation($id: ID!) {
+          markPullRequestReadyForReview(input: {pullRequestId: $id}) {
+            pullRequest { isDraft }
+          }
+        }
+        """
+        gql = http.post(
+            "https://api.github.com/graphql",
+            json={"query": mutation, "variables": {"id": node_id}},
+        )
+        if gql.status_code == 200 and "errors" not in gql.json():
+            logger.info("PR #%s marcado como ready-for-review", pr_number)
+            return True
+        logger.error("mark_pr_ready GraphQL falhou: %s %s", gql.status_code, gql.text[:300])
+        return False

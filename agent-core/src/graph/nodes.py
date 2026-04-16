@@ -131,6 +131,185 @@ def _merge_stage_artifacts(
     return merged
 
 
+_STAGE_TO_CODE_PATH = {
+    "quality": "R/01_quality.R",
+    "hypothesis": "R/02_hypothesis.R",
+    "ml": "R/03_ml.R",
+}
+
+
+def _stage_progress_line(stage: str, result: dict, committed: bool = True) -> str:
+    """Uma linha pro body do PR refletindo progresso da stage."""
+    if not result or not committed:
+        return f"- ⏳ **{stage}** — pendente"
+    if not result.get("success"):
+        return f"- ⚠️ **{stage}** — terminou com falhas"
+    s = result.get("summary") or {}
+    detail = ""
+    if stage == "quality":
+        ds = s.get("dataset") or {}
+        detail = (
+            f" — {ds.get('rows_original','?')}→{ds.get('rows_final','?')} linhas, "
+            f"{ds.get('cols_dropped',0)} colunas descartadas"
+        )
+    elif stage == "hypothesis":
+        hyps = s.get("hypotheses") or []
+        detail = f" — {len(hyps)} hipóteses avaliadas"
+    elif stage == "ml":
+        metrics = (result.get("metrics") or {}) if stage == "ml" else {}
+        detail = f" — {len(metrics)} métricas" if metrics else ""
+    return f"- ✅ **{stage}**{detail}"
+
+
+def _build_pr_body(state: ProjectState, committed: list[str]) -> str:
+    """Body do PR refletindo progresso de cada stage comitada."""
+    run_id = state.get("run_id", "?")
+    workflow = state.get("workflow_type", "?")
+    plan_issues = state.get("plan_issues") or {}
+
+    lines = [
+        f"**Run:** `{run_id}` · **Workflow:** `{workflow}`",
+        "",
+        "## Progresso",
+    ]
+    stages = ["quality", "hypothesis", "ml"]
+    results_by_stage = {
+        "quality": state.get("quality_results") or {},
+        "hypothesis": state.get("hypothesis_results") or {},
+        "ml": state.get("model_results") or {},
+    }
+    for st in stages:
+        is_relevant = (
+            st == "quality"
+            or (st == "hypothesis" and workflow in {"eda_hypothesis", "full_ml"})
+            or (st == "ml" and workflow == "full_ml")
+        )
+        if not is_relevant:
+            continue
+        lines.append(_stage_progress_line(st, results_by_stage[st], st in committed))
+
+    if plan_issues:
+        lines += [
+            "",
+            "## Issues rastreadas",
+            *[f"- #{plan_issues[s]} (`{s}`)" for s in plan_issues],
+        ]
+
+    lines += [
+        "",
+        "_PR atualizado incrementalmente a cada fase concluída._",
+    ]
+    return "\n".join(lines)
+
+
+def _commit_stage_to_repo(
+    state: ProjectState, stage: str, result: dict
+) -> dict | None:
+    """
+    Commita artefatos da stage no branch `run/<short>`, fecha a issue da stage
+    e garante que existe um draft PR rastreando o run.
+
+    Idempotente: se branch existe, adiciona commit em cima. Se PR existe,
+    apenas atualiza o body. Falhas de GitHub são logadas mas não levantam
+    (garantia de que problemas de rede não quebram o run).
+
+    Retorna dict com updates pro state: {run_pr?, stages_committed}.
+    """
+    from ..storage import github_manager, github_pm
+    import json as _json
+
+    repo_url = state.get("github_repo")
+    if not repo_url:
+        return None
+    if not result or not result.get("success"):
+        logger.info("commit_stage: stage %s não teve sucesso, pulando push", stage)
+        return None
+
+    run_id = state.get("run_id", "unknown")
+    run_short = run_id[:8] if isinstance(run_id, str) else "unknown"
+    branch_name = f"run/{run_short}"
+    code_path = _STAGE_TO_CODE_PATH.get(stage, f"R/{stage}.R")
+
+    # Coleta arquivos da stage (reusa helper existente)
+    files: dict[str, bytes] = {}
+    _collect_stage_artifacts(files, result, stage, code_path)
+
+    if not files:
+        logger.info("commit_stage: stage %s sem arquivos para commitar", stage)
+        return None
+
+    # plan.json (primeira vez que commitar no run)
+    stages_committed = list(state.get("stages_committed") or [])
+    if not stages_committed:
+        files["plan.json"] = _json.dumps(
+            state.get("plan") or {}, ensure_ascii=False, indent=2
+        ).encode()
+
+    # Commit message inclui Closes #N pra issue da stage
+    plan_issues = state.get("plan_issues") or {}
+    issue_num = plan_issues.get(stage)
+    msg_lines = [f"[{stage}] Cortex run {run_short}"]
+    summary = result.get("summary") or {}
+    if stage == "quality" and summary.get("dataset"):
+        ds = summary["dataset"]
+        msg_lines.append(
+            f"Qualidade: {ds.get('rows_original','?')}→{ds.get('rows_final','?')} linhas, "
+            f"{ds.get('cols_dropped',0)} colunas descartadas"
+        )
+    elif stage == "hypothesis" and summary.get("hypotheses"):
+        msg_lines.append(f"EDA: {len(summary['hypotheses'])} hipóteses testadas")
+    elif stage == "ml" and result.get("metrics"):
+        msg_lines.append(f"Modeling: {len(result['metrics'])} métricas registradas")
+    if issue_num:
+        msg_lines.append("")
+        msg_lines.append(f"Closes #{issue_num}")
+    commit_message = "\n".join(msg_lines)
+
+    push_info = github_manager.push_to_branch(
+        repo_url, branch_name, files, commit_message=commit_message
+    )
+    if not push_info.get("ok"):
+        logger.error("commit_stage: push falhou para %s — %s",
+                     stage, push_info.get("error"))
+        return None
+
+    # Fecha issue explicitamente (belt-and-suspenders; "Closes" só age no merge)
+    if issue_num:
+        try:
+            github_pm.close_issue(repo_url, issue_num, reason="completed")
+        except Exception as e:
+            logger.warning("close_issue %s falhou: %s", issue_num, e)
+
+    # Atualiza lista de stages comitadas antes de compor o PR body
+    stages_committed.append(stage)
+
+    # Abre ou atualiza draft PR
+    run_pr = state.get("run_pr")
+    updates: dict = {"stages_committed": stages_committed}
+    try:
+        if not run_pr:
+            pr = github_pm.create_pr(
+                repo_url,
+                head=branch_name,
+                base="main",
+                title=f"Cortex run {run_short} ({state.get('workflow_type','?')})",
+                body=_build_pr_body(state, stages_committed),
+                draft=True,
+            )
+            if pr:
+                updates["run_pr"] = pr
+        else:
+            github_pm.update_pr_body(
+                repo_url, run_pr["number"], _build_pr_body(state, stages_committed)
+            )
+    except Exception as e:
+        logger.warning("PR draft/update falhou: %s", e)
+
+    logger.info("commit_stage: %s comitado em %s (issue #%s fechada)",
+                stage, branch_name, issue_num)
+    return updates
+
+
 def _fmt_finding(f) -> str:
     if isinstance(f, dict):
         obs = f.get("finding") or ""
@@ -482,13 +661,19 @@ def node_quality(state: ProjectState) -> dict:
     published = _publish_stage_artifacts(
         state.get("run_id", "unknown"), "quality", result.get("outputs_dir")
     )
-    return {
+    updates = {
         "quality_results": result,
         "current_phase": "quality",
         "stage_artifacts": _merge_stage_artifacts(
             state.get("stage_artifacts"), "quality", published
         ),
     }
+    # Commit incremental no repo do cliente + fecha issue + atualiza draft PR
+    state_for_commit = {**state, **updates}
+    repo_updates = _commit_stage_to_repo(state_for_commit, "quality", result)
+    if repo_updates:
+        updates.update(repo_updates)
+    return updates
 
 
 def node_hypothesis(state: ProjectState) -> dict:
@@ -496,13 +681,18 @@ def node_hypothesis(state: ProjectState) -> dict:
     published = _publish_stage_artifacts(
         state.get("run_id", "unknown"), "hypothesis", result.get("outputs_dir")
     )
-    return {
+    updates = {
         "hypothesis_results": result,
         "current_phase": "hypothesis",
         "stage_artifacts": _merge_stage_artifacts(
             state.get("stage_artifacts"), "hypothesis", published
         ),
     }
+    state_for_commit = {**state, **updates}
+    repo_updates = _commit_stage_to_repo(state_for_commit, "hypothesis", result)
+    if repo_updates:
+        updates.update(repo_updates)
+    return updates
 
 
 def node_decide_next(state: ProjectState) -> dict:
@@ -539,7 +729,7 @@ def node_modeling(state: ProjectState) -> dict:
         state.get("run_id", "unknown"), "ml", result.get("outputs_dir")
     )
 
-    return {
+    updates = {
         "model_results": result,
         "current_phase": "modeling",
         "status": "waiting_human",
@@ -547,6 +737,13 @@ def node_modeling(state: ProjectState) -> dict:
             state.get("stage_artifacts"), "ml", published
         ),
     }
+    # Wrap modeler result num shape que _commit_stage_to_repo espera (success flag)
+    ml_result = {**result, "success": result.get("exit_code") == 0 and bool(result.get("metrics"))}
+    state_for_commit = {**state, **updates}
+    repo_updates = _commit_stage_to_repo(state_for_commit, "ml", ml_result)
+    if repo_updates:
+        updates.update(repo_updates)
+    return updates
 
 
 def node_review(state: ProjectState) -> dict:
@@ -611,85 +808,17 @@ def _collect_stage_artifacts(
         files[dest] = p.read_bytes()
 
 
-def _open_run_pr(
-    state: ProjectState, report: dict, branch_name: str, run_short: str
-) -> dict | None:
-    """Abre PR run/xxx → main com 'Closes #N' para cada issue de stage, e comenta."""
-    from ..storage import github_pm
-
-    repo_url = state.get("github_repo")
-    if not repo_url:
-        return None
-
-    plan_issues = state.get("plan_issues") or {}
-    workflow = state.get("workflow_type", "?")
-    title = f"Cortex run {run_short} ({workflow})"
-
-    stages_that_ran: list[str] = []
-    if state.get("quality_results"):
-        stages_that_ran.append("quality")
-    if state.get("hypothesis_results"):
-        stages_that_ran.append("hypothesis")
-    if state.get("model_results"):
-        stages_that_ran.append("ml")
-
-    closes_lines = [
-        f"Closes #{plan_issues[s]}" for s in stages_that_ran if s in plan_issues
-    ]
-    exec_sum = (report.get("executive_summary") or "_(vazio)_").strip()
-    quality_verdict = report.get("quality_verdict", "n/a")
-
-    body_parts = [
-        *closes_lines,
-        "",
-        f"**Workflow:** `{workflow}` · **Veredito de qualidade:** `{quality_verdict}`",
-        "",
-        "## Resumo Executivo",
-        exec_sum,
-        "",
-        "## Entregáveis neste branch",
-        "- `outputs/*.html` — relatórios Quarto interativos por etapa",
-        "- `R/0N_<etapa>.R` — código fonte",
-        "- `outputs/*_summary.json` — sumário estruturado",
-        "",
-        f"_Gerado automaticamente pelo Cortex. Run `{state.get('run_id')}`._",
-    ]
-    body = "\n".join(body_parts)
-
-    try:
-        pr = github_pm.create_pr(
-            repo_url, head=branch_name, base="main", title=title, body=body
-        )
-    except Exception as e:
-        logger.exception("create_pr falhou: %s", e)
-        return {"status": "error", "error": str(e)}
-
-    if pr is None:
-        return {"status": "failed"}
-
-    # Comentário adicional com findings (o corpo já tem exec summary).
-    findings = report.get("key_findings") or []
-    recommendations = report.get("recommendations") or []
-    if findings or recommendations:
-        parts = ["## 🔑 Principais Achados"]
-        for f in findings[:10]:
-            parts.append(f"- {_fmt_finding(f)}")
-        if recommendations:
-            parts += ["", "## 🎯 Recomendações"]
-            for r in recommendations[:10]:
-                parts.append(f"- {_fmt_recommendation(r)}")
-        try:
-            github_pm.comment_pr(repo_url, pr["number"], "\n".join(parts))
-        except Exception as e:
-            logger.warning("comment_pr falhou: %s", e)
-
-    pr["status"] = "opened"
-    return pr
-
-
 def node_report(state: ProjectState) -> dict:
+    """
+    Fecha o ciclo:
+    1. Compila relatório final via orchestrator.
+    2. Commita README + final_report.json no branch do run (os artefatos
+       das stages já foram comitados incrementalmente por node_quality/
+       hypothesis/modeling).
+    3. Marca o draft PR existente como ready-for-review.
+    """
     import json as _json
-    from ..storage import github_manager
+    from ..storage import github_manager, github_pm
 
     quality = state.get("quality_results") or {}
     hypothesis = state.get("hypothesis_results") or {}
@@ -708,41 +837,57 @@ def node_report(state: ProjectState) -> dict:
     )
 
     push_info: dict = {"status": "skipped"}
-    pr_info: dict | None = None
+    pr_info: dict | None = state.get("run_pr")
     repo_url = state.get("github_repo")
     if repo_url:
         try:
             run_id = state.get("run_id", "unknown")
             run_short = run_id[:8] if isinstance(run_id, str) else "unknown"
-
-            files: dict[str, bytes] = {
-                "plan.json": _json.dumps(plan, ensure_ascii=False, indent=2).encode(),
-                "final_report.json": _json.dumps(report, ensure_ascii=False, indent=2).encode(),
-            }
-            _collect_stage_artifacts(files, quality, "quality", "R/01_quality.R")
-            _collect_stage_artifacts(files, hypothesis, "hypothesis", "R/02_hypothesis.R")
-            if model:
-                _collect_stage_artifacts(files, model, "ml", "R/03_ml.R")
-
-            files["README.md"] = _build_run_readme(state, report).encode()
-
             branch_name = f"run/{run_short}"
-            n_quality_attempts = len((quality.get("attempts") or []))
-            n_hypothesis_attempts = len((hypothesis.get("attempts") or []))
-            commit_msg = (
-                f"Cortex run {run_short}: {state.get('workflow_type','?')} "
-                f"(quality={n_quality_attempts} tent., hypothesis={n_hypothesis_attempts} tent.)"
-            )
+
+            # Último commit: só README final + final_report.json. Artefatos
+            # das stages já foram comitados por _commit_stage_to_repo.
+            files: dict[str, bytes] = {
+                "README.md": _build_run_readme(state, report).encode(),
+                "final_report.json": _json.dumps(
+                    report, ensure_ascii=False, indent=2
+                ).encode(),
+            }
             push_info = github_manager.push_to_branch(
-                repo_url, branch_name, files, commit_message=commit_msg
+                repo_url, branch_name, files,
+                commit_message=f"Cortex run {run_short}: relatório final",
             )
             push_info["status"] = "pushed" if push_info.get("ok") else "failed"
 
-            # PR run/xxx → main + comentário com exec summary.
-            if push_info.get("ok"):
-                pr_info = _open_run_pr(state, report, branch_name, run_short)
+            # Marca PR como ready-for-review (sai do draft)
+            if pr_info and push_info.get("ok"):
+                try:
+                    github_pm.mark_pr_ready(repo_url, pr_info["number"])
+                    github_pm.update_pr_body(
+                        repo_url, pr_info["number"],
+                        _build_pr_body(state, state.get("stages_committed") or [])
+                        + "\n\n---\n\n## Resumo Executivo\n\n"
+                        + (report.get("executive_summary") or "_(vazio)_"),
+                    )
+                    # Comentário final com findings + recomendações
+                    findings = report.get("key_findings") or []
+                    recs = report.get("recommendations") or []
+                    if findings or recs:
+                        parts = ["## 🔑 Principais Achados"]
+                        for f in findings[:10]:
+                            parts.append(f"- {_fmt_finding(f)}")
+                        if recs:
+                            parts += ["", "## 🎯 Recomendações"]
+                            for r in recs[:10]:
+                                parts.append(f"- {_fmt_recommendation(r)}")
+                        github_pm.comment_pr(
+                            repo_url, pr_info["number"], "\n".join(parts)
+                        )
+                except Exception as e:
+                    logger.warning("mark_pr_ready/update falhou: %s", e)
+
         except Exception as e:
-            logger.exception("github push error: %s", e)
+            logger.exception("github report-commit error: %s", e)
             push_info = {"status": f"error:{type(e).__name__}", "error": str(e)}
 
     report["_github_push"] = push_info
