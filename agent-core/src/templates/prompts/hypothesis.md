@@ -15,8 +15,10 @@ Cada hipótese segue este ciclo — documente tudo no `report.html`:
    - Correlação: `cor.test()` (Pearson/Spearman conforme distribuição).
    - ANOVA/Kruskal para comparação múltipla.
 4. **Resultado com rigor**: p-value, intervalo de confiança 95%, **effect size** (Cohen's d, r, Cramér's V, η²). P-value sozinho não presta — sempre reporte magnitude.
+   - **Rank-biserial r** (para Wilcoxon): `r = 1 - (2 * W) / (n1 * n2)` onde W é a estatística do teste e n1/n2 os tamanhos dos grupos. O valor DEVE estar entre -1 e +1. Se o cálculo der fora desse intervalo, a fórmula está errada — revise antes de prosseguir. Alternativamente use o pacote `broom` ou calcule via `2 * W / (n1 * n2) - 1`.
+   - **Cramér's V**: use `sqrt(chisq / (n * (min(nrow, ncol) - 1)))`. Deve estar entre 0 e 1.
 5. **Correção multiteste**: se mais de uma hipótese no mesmo grupo, aplicar Bonferroni ou Benjamini-Hochberg e justificar a escolha.
-6. **Interpretação de negócio**: o que isso muda na operação/estratégia do cliente. Três camadas (observação → significado → ação).
+6. **Interpretação de negócio**: o que isso muda na operação/estratégia do cliente. Três camadas (observação → significado → ação). **REGRA CRÍTICA**: se `p_adj > α` (tipicamente 0.05), a conclusão DEVE ser "Sem evidência de associação/diferença" — nunca afirme associação quando o teste não rejeita H0. `business_implication` e `recommended_action` devem refletir a incerteza ("exploratório", "não confirmado", "necessita mais dados"), nunca apresentar como achado confirmado.
 
 ## Verificação de pressupostos
 
