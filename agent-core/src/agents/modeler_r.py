@@ -25,7 +25,10 @@ Ao gerar código R:
 - Salve tabela comparativa em ./outputs/leaderboard.csv.
 - NÃO acesse rede. NÃO instale pacotes.
 
-Bibliotecas disponíveis: tidyverse, tidymodels, ranger, xgboost, jsonlite, data.table, arrow.
+Bibliotecas disponíveis (SOMENTE estas — qualquer outra causa crash):
+tidyverse, tidymodels, ranger, xgboost, jsonlite, data.table, echarts4r,
+plotly, DT, rmarkdown, quarto, htmlwidgets, broom, skimr, lubridate.
+NÃO use: themis, arrow, caret, h2o, mlr3 — não estão instaladas.
 
 Responda APENAS com código R puro, sem cercas markdown, sem explicação.
 """
@@ -49,7 +52,7 @@ def run_modeler_r(
         system=MODELER_R_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
         complex=True,
-        max_tokens=6000,
+        max_tokens=16384,
     )
     code = _strip(code_result.text)
 
