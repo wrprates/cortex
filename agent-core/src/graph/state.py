@@ -23,6 +23,8 @@ class ProjectState(TypedDict, total=False):
     plan_issues: dict  # {stage_name: issue_number} — issues GitHub criadas em node_plan
     milestone_number: int  # milestone do projeto no repo (idempotente por projeto)
     stage_artifacts: dict  # {stage: {filename: s3_uri}} — bus de handoff entre fases
+    run_pr: dict  # {"number": int, "html_url": str} — draft PR do run (commits incrementais)
+    stages_committed: list  # lista de stages já comitadas no branch do run
     quality_results: dict
     hypothesis_results: dict
     model_results: dict

@@ -108,25 +108,49 @@ def push_to_branch(
             cwd=repo_path, capture_output=True, check=True,
         )
 
-        # Checa base branch e cria branch novo a partir dele
-        checkout_base = subprocess.run(
-            ["git", "checkout", base_branch],
+        # Se o branch já existe no remote, faz checkout dele (preserva commits
+        # anteriores do mesmo run). Senão, cria a partir do base.
+        ls_remote = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "origin",
+             f"refs/heads/{branch_name}"],
             cwd=repo_path, capture_output=True,
         )
-        if checkout_base.returncode != 0:
-            logger.warning(
-                "checkout %s falhou (%s); tentando master como fallback",
-                base_branch, checkout_base.stderr.decode()[-200:],
-            )
-            subprocess.run(["git", "checkout", "master"], cwd=repo_path, capture_output=True)
+        branch_exists = ls_remote.returncode == 0
 
-        branch_new = subprocess.run(
-            ["git", "checkout", "-B", branch_name],
-            cwd=repo_path, capture_output=True,
-        )
-        if branch_new.returncode != 0:
-            err = branch_new.stderr.decode("utf-8", errors="replace")[-500:]
-            return {"ok": False, "branch": branch_name, "error": f"checkout -B: {err}"}
+        if branch_exists:
+            fetch = subprocess.run(
+                ["git", "fetch", "origin", branch_name],
+                cwd=repo_path, capture_output=True,
+            )
+            if fetch.returncode != 0:
+                err = fetch.stderr.decode("utf-8", errors="replace")[-500:]
+                return {"ok": False, "branch": branch_name, "error": f"fetch: {err}"}
+            co = subprocess.run(
+                ["git", "checkout", branch_name],
+                cwd=repo_path, capture_output=True,
+            )
+            if co.returncode != 0:
+                err = co.stderr.decode("utf-8", errors="replace")[-500:]
+                return {"ok": False, "branch": branch_name, "error": f"checkout existing: {err}"}
+        else:
+            checkout_base = subprocess.run(
+                ["git", "checkout", base_branch],
+                cwd=repo_path, capture_output=True,
+            )
+            if checkout_base.returncode != 0:
+                logger.warning(
+                    "checkout %s falhou (%s); tentando master como fallback",
+                    base_branch, checkout_base.stderr.decode()[-200:],
+                )
+                subprocess.run(["git", "checkout", "master"], cwd=repo_path, capture_output=True)
+
+            branch_new = subprocess.run(
+                ["git", "checkout", "-b", branch_name],
+                cwd=repo_path, capture_output=True,
+            )
+            if branch_new.returncode != 0:
+                err = branch_new.stderr.decode("utf-8", errors="replace")[-500:]
+                return {"ok": False, "branch": branch_name, "error": f"checkout -b: {err}"}
 
         # Grava arquivos
         for rel_path, content in files.items():
