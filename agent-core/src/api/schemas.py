@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WorkflowType(str, Enum):
@@ -13,10 +13,37 @@ class WorkflowType(str, Enum):
 
 
 class ClientCreate(BaseModel):
+    """
+    Dois modos mutuamente exclusivos:
+
+    - **criar** (`auto_create_repo=True`, `github_repo=None`): Cortex cria um
+      repositório novo no GitHub com o nome do cliente.
+    - **continuar** (`auto_create_repo=False`, `github_repo=<url>`): apenas
+      registra o cliente sobre um repo já existente.
+
+    Qualquer outra combinação é rejeitada com 400 — intenção precisa ser
+    explícita pra evitar criar repo "sem querer" quando o humano só queria
+    continuar trabalho existente.
+    """
+
     name: str = Field(..., min_length=1, max_length=200)
     github_repo: str | None = None
     auto_create_repo: bool = True
     config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_repo_mode(self) -> "ClientCreate":
+        if self.auto_create_repo and self.github_repo:
+            raise ValueError(
+                "auto_create_repo=true com github_repo fornecido é ambíguo: "
+                "use auto_create_repo=false para continuar num repo existente, "
+                "ou omita github_repo para criar um novo."
+            )
+        if not self.auto_create_repo and not self.github_repo:
+            raise ValueError(
+                "auto_create_repo=false exige github_repo (URL do repo existente)."
+            )
+        return self
 
 
 class ClientOut(BaseModel):

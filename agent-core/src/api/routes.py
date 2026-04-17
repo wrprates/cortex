@@ -22,10 +22,21 @@ router = APIRouter()
 
 @router.post("/clients", response_model=ClientOut, status_code=201)
 async def create_client(payload: ClientCreate) -> ClientOut:
-    repo = payload.github_repo
-    if repo is None and payload.auto_create_repo:
-        # Cria repo upfront no GitHub; se falhar, loga mas segue (cliente é criado sem repo)
+    # Schema já garantiu que só um dos dois modos chega até aqui.
+    if payload.auto_create_repo:
         repo = await github_manager.create_client_repo(payload.name)
+        if repo is None:
+            # Falha explícita: se pediu criar e o GitHub recusou, não criamos
+            # cliente órfão. Mensagem acionável pro humano ver o motivo no log.
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "GitHub recusou a criação do repo — ver logs do agent-core "
+                    "(token sem escopo, repo homônimo em outra org, rate limit)."
+                ),
+            )
+    else:
+        repo = payload.github_repo
     row = await db.insert_client(payload.name, repo, payload.config)
     return ClientOut(**row)
 
