@@ -5,7 +5,7 @@
 ## Motivação
 
 O Cortex hoje:
-- Cria repo novo a cada projeto.
+- **Sempre cria** repo novo quando um projeto é iniciado, mesmo quando o humano queria continuar trabalho em repo existente.
 - Executa um "full_ml" linear de ponta-a-ponta, com checkpoints de aprovação humana obrigatórios entre fases.
 - Exige que o humano dispare um `POST /v1/runs` e acompanhe o processo até o fim.
 - Gera resultado pobre no repo (README + JSON), sem a estrutura rica de Quarto/artefatos do "penúltimo projeto".
@@ -14,7 +14,7 @@ O Cortex hoje:
 O que o dono quer:
 - **Parceiro de trabalho, não orquestrador linear.** O Cortex e o humano trabalham **no mesmo repo, ao mesmo tempo**, sem pisar no pé um do outro.
 - **1 issue = 1 run = 1 PR.** Granularidade pequena. Cada unidade de trabalho é uma issue do GitHub, executada num run curto, entregue num PR pequeno, idealmente auto-mergeável.
-- **Repo existente, não novo.** O Cortex opera em um repositório já criado (ex.: `ecommerce-demo`), detecta o que já foi feito, e continua de onde parou.
+- **Criar repo novo OU continuar existente — conforme a intenção.** Se o humano diz "novo projeto X", Cortex cria o repo `X`. Se diz "continua o projeto Y", Cortex opera em `Y` já existente. Capacidade de criar repo **fica** (foi trabalho conquistar); o que muda é que criar deixa de ser o default automático.
 - **Estrutura determinística e rica.** Cada etapa produz um Quarto report (`outputs/quality.html`, `outputs/hypothesis.html`, etc.) + artefatos (`artifacts/models/`, `artifacts/plots/`).
 - **Auto-approve por padrão.** Só pausa para humano em bloqueio real (data leak, ambiguidade no brief, métrica abaixo de threshold).
 - **Sem frescura.** Funcionar sem inventar moda. Fail loud com mensagem acionável.
@@ -53,18 +53,24 @@ Ciclo base:
 
 Cada sprint entrega valor incremental. Ordem importa: sprint N assume a base do sprint N-1.
 
-### Sprint 1 — Issue-driven + Repo-driven
+### Sprint 1 — Issue-driven + Repo-awareness (novo OU existente)
 
-**Objetivo**: Cortex deixa de criar repos. Opera em repo existente, pega 1 issue por run.
+**Objetivo**: Cortex passa a tratar "criar repo" como ação **sob demanda**, não default. Opera em repo existente quando for o caso, e pega 1 issue por run.
 
 Mudanças:
-- `api/schemas.py` — `ProjectCreate` passa a exigir `github_repo` (URL completa). Remove `name`/`description` opcionais que hoje viram nome de repo novo.
-- `api/routes.py` — novo endpoint `POST /v1/ticks` (ou reuso de `POST /v1/runs` sem body): dispara um "pegar 1 issue do backlog e executar".
-- `storage/github_manager.py` — deletar `create_client_repo()` e qualquer código que cria repo. Se repo não existe, levanta erro claro.
+- `api/schemas.py` — `ProjectCreate` ganha dois modos mutuamente exclusivos:
+  - **modo continuar** (novo default): `github_repo` (URL completa) — obrigatório se `create_new=false`.
+  - **modo novo**: `create_new=true` + `new_repo_name` + `visibility` (`private`/`public`) — dispara criação.
+  - Validação: exatamente um dos dois modos deve ser usado. 400 claro se ambíguo.
+- `api/routes.py` — novo endpoint `POST /v1/ticks` (ou reuso de `POST /v1/runs` sem body): dispara um "pegar 1 issue do backlog e executar". Tick assume que o projeto já foi criado via `POST /v1/projects`.
+- `storage/github_manager.py` — `create_client_repo()` **permanece**, mas só é chamado quando `create_new=true`. Em "modo continuar", se o repo não existe, levanta erro claro ao invés de criar silenciosamente.
 - `graph/nodes.py` — novo nó `pick_issue` no topo do grafo, que lista issues abertas com label `cortex:*` e sem `cortex:in-progress`, e decide a kind (`quality` / `eda` / `modeling` / etc.) pela label.
-- `scripts/init-db.sql` — migração: `projects.github_repo NOT NULL`. Drop `clients.github_repo` (redundante) se existir.
+- `scripts/init-db.sql` — migração: `projects.github_repo NOT NULL` (populada tanto em criação quanto em continuação; sempre aponta pro repo efetivo).
 
-**Pronto quando**: subo o stack, abro uma issue `[cortex:quality]` no `ecommerce-demo`, disparo o tick, e em minutos existe um PR novo fechando essa issue.
+**Pronto quando**:
+- `POST /v1/projects` com `{"create_new": true, "new_repo_name": "churn-demo"}` cria repo novo e cadastra projeto.
+- `POST /v1/projects` com `{"github_repo": "https://github.com/wrprates/ecommerce-demo"}` cadastra projeto sobre repo existente sem tocar no GitHub.
+- Em ambos os casos, abro uma issue `[cortex:quality]` e em minutos um PR aparece fechando essa issue.
 
 ### Sprint 2 — Concorrência sem pisar no pé
 
