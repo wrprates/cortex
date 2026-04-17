@@ -89,6 +89,23 @@ class RunOut(BaseModel):
     finished_at: datetime | None = None
 
 
+class BacklogItem(BaseModel):
+    """Item retornado pelo endpoint de backlog (issue claimável pelo Cortex)."""
+
+    issue_number: int
+    title: str
+    kind: str  # quality | eda | modeling | review
+    url: str
+    updated_at: datetime
+    labels: list[str]
+
+
+class BacklogOut(BaseModel):
+    project_id: UUID
+    github_repo: str
+    items: list[BacklogItem]
+
+
 class HumanDecisionIn(BaseModel):
     run_id: UUID
     task_id: UUID | None = None

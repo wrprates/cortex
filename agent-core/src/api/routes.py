@@ -4,9 +4,11 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from ..services import runs as runs_service
+from ..storage import github_manager, github_pm
 from ..storage import postgres as db
-from ..storage import github_manager
 from .schemas import (
+    BacklogItem,
+    BacklogOut,
     ClientCreate,
     ClientOut,
     HumanDecisionIn,
@@ -84,6 +86,58 @@ async def get_project(project_id: UUID) -> ProjectOut:
     if row is None:
         raise HTTPException(status_code=404, detail="project not found")
     return ProjectOut(**row)
+
+
+@router.get("/projects/{project_id}/backlog", response_model=BacklogOut)
+async def get_project_backlog(project_id: UUID) -> BacklogOut:
+    """
+    Read-only: lista issues que o Cortex pegaria na próxima rodada.
+
+    Critério (ver `github_pm.list_claimable_issues`): issues `open` com alguma
+    label `cortex:<kind>` e **sem** `cortex:in-progress`. Ordenadas `updated_at`
+    ascendente pra evitar starvation.
+
+    Não faz claim nem dispara run — serve pra humano ver a fila e pra debug
+    do loop de ticks que entra em sprint 1/B3.
+    """
+    project = await db.fetch_project(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    client_id = project.get("client_id")
+    if client_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="project has no client; backlog requires a client with github_repo",
+        )
+
+    client = await db.fetch_client(client_id)
+    github_repo = (client or {}).get("github_repo")
+    if not github_repo:
+        raise HTTPException(
+            status_code=409,
+            detail="client has no github_repo configured",
+        )
+
+    issues = github_pm.list_claimable_issues(github_repo)
+    items: list[BacklogItem] = []
+    for issue in issues:
+        kind = github_pm.get_issue_kind(issue)
+        if kind is None:
+            # list_claimable_issues já filtrou por label kind — essa guard é
+            # defensiva contra evolução da constante _KIND_LABELS.
+            continue
+        items.append(
+            BacklogItem(
+                issue_number=issue["number"],
+                title=issue["title"],
+                kind=kind,
+                url=issue["html_url"],
+                updated_at=issue["updated_at"],
+                labels=[lb.get("name", "") for lb in issue.get("labels", [])],
+            )
+        )
+    return BacklogOut(project_id=project_id, github_repo=github_repo, items=items)
 
 
 @router.post("/runs", response_model=RunOut, status_code=201)
