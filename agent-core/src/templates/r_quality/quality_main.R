@@ -298,6 +298,74 @@ for (ct in col_types) {
 n_rows_final <- nrow(df)
 n_cols_final <- ncol(df)
 
+# -------------------------------------------------------------
+# 5.1 Detecta target e calcula estatísticas de target
+# -------------------------------------------------------------
+# Heurística: procura coluna com nome canônico. Se não achar, procura boolean
+# com cardinalidade 2 perto do fim do df (convenção comum em datasets públicos).
+target_name_patterns <- c("^churn$", "^target$", "^label$", "^y$", "^class$", "^outcome$")
+target_col <- NULL
+for (pat in target_name_patterns) {
+  hits <- names(df)[grepl(pat, names(df), ignore.case = TRUE)]
+  if (length(hits) > 0) { target_col <- hits[1]; break }
+}
+# Fallback: último boolean/binary-cardinality 2
+if (is.null(target_col)) {
+  last_cols <- tail(names(df), 3)
+  for (nm in rev(last_cols)) {
+    if (nm %in% names(treatments)) {
+      tt <- treatments[[nm]]$semantic_type
+      if (!is.null(tt) && tt %in% c("boolean", "categorical")) {
+        # Se categorical com cardinalidade 2, também vira target candidato
+        vals <- unique(df[[nm]])
+        if (length(vals[!is.na(vals)]) == 2) { target_col <- nm; break }
+      }
+    }
+  }
+}
+
+target_info <- NULL
+if (!is.null(target_col)) {
+  y <- df[[target_col]]
+  y_chr <- as.character(y)
+  dist <- sort(table(y_chr, useNA = "no"), decreasing = TRUE)
+
+  # Positive class: convenção "Yes"/"True"/"1"; fallback pro menos frequente
+  positives <- c("Yes", "yes", "YES", "True", "TRUE", "1", "Sim", "sim")
+  pos_class <- NULL
+  for (p in positives) {
+    if (p %in% names(dist)) { pos_class <- p; break }
+  }
+  if (is.null(pos_class) && length(dist) >= 2) {
+    pos_class <- names(dist)[length(dist)]  # classe minoritária
+  }
+
+  # rate_by_categorical: pra cada categorical (top 10), P(target == pos | level)
+  rates_by <- list()
+  if (!is.null(pos_class)) {
+    y_bin <- as.integer(y_chr == pos_class)
+    cat_names <- names(treatments)[sapply(names(treatments), function(n)
+      !is.null(treatments[[n]]$semantic_type) &&
+        treatments[[n]]$semantic_type == "categorical" &&
+        n != target_col)]
+    for (nm in head(cat_names, 10)) {
+      agg <- tapply(y_bin, as.character(df[[nm]]), mean, na.rm = TRUE)
+      if (length(agg) > 0) rates_by[[nm]] <- as.list(round(as.numeric(agg) * 100, 2))
+      if (length(rates_by[[nm]]) > 0) names(rates_by[[nm]]) <- names(agg)
+    }
+  }
+
+  target_info <- list(
+    column = target_col,
+    type = treatments[[target_col]]$semantic_type %||% "unknown",
+    positive_class = pos_class,
+    distribution = as.list(dist),
+    rate_by_categorical = rates_by
+  )
+  message(sprintf("[quality] target detectado: %s (pos=%s)",
+                  target_col, pos_class %||% "?"))
+}
+
 summary_json <- list(
   dataset = list(
     file = source_file,
@@ -308,7 +376,8 @@ summary_json <- list(
     rows_removed = n_rows_orig - n_rows_final,
     cols_dropped = n_cols_orig - n_cols_final
   ),
-  columns = treatments
+  columns = treatments,
+  target = target_info
 )
 
 write_json(summary_json, "./outputs/summary.json",
@@ -329,50 +398,20 @@ if (requireNamespace("arrow", quietly = TRUE)) {
 }
 
 # -------------------------------------------------------------
-# 7. Report Quarto
+# 7. Report Quarto — usa template fixo injetado pelo dispatcher.
+#     O template lê summary.json + analysis.rds (ambos em ./outputs/) e
+#     renderiza um HTML rico com tabelas gt, boxplots e echarts4r. Zero
+#     geração de QMD em runtime — garante consistência entre runs.
 # -------------------------------------------------------------
-qmd_lines <- c(
-  "---",
-  "title: 'Diagnóstico de Qualidade dos Dados'",
-  "format:",
-  "  html:",
-  "    self-contained: true",
-  "    toc: true",
-  "---",
-  "",
-  "```{r setup, include=FALSE}",
-  "knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)",
-  "library(tidyverse)",
-  "library(jsonlite)",
-  "s <- fromJSON('summary.json', simplifyVector = FALSE)",
-  "```",
-  "",
-  "## Dataset",
-  "",
-  "```{r}",
-  "ds <- s$dataset",
-  "cat(sprintf(",
-  "  '**Arquivo:** `%s` · **Linhas:** %s (removidas %s) · **Colunas:** %s (removidas %s)\\n\\n',",
-  "  ds$file, ds$rows_final, ds$rows_removed, ds$cols_final, ds$cols_dropped",
-  "))",
-  "```",
-  "",
-  "## Tratamento por coluna",
-  "",
-  "```{r}",
-  "for (col in names(s$columns)) {",
-  "  r <- s$columns[[col]]",
-  "  cat(sprintf('### `%s` — tipo: %s · ação: %s\\n\\n', col, r$semantic_type, r$action))",
-  "  if (length(r$findings) > 0) {",
-  "    cat(paste0('- ', unlist(r$findings), collapse = '\\n'), '\\n\\n')",
-  "  } else {",
-  "    cat('- sem observações críticas\\n\\n')",
-  "  }",
-  "}",
-  "```"
-)
-
-writeLines(qmd_lines, "./outputs/report.qmd")
+template_src <- "./inputs/__report_template.qmd"
+if (!file.exists(template_src)) {
+  stop(sprintf(
+    "[quality] template QMD não encontrado em %s. O dispatcher Python deve ",
+    "injetar `__report_template.qmd` em inputs — veja quality_dispatcher.py.",
+    template_src
+  ))
+}
+file.copy(template_src, "./outputs/report.qmd", overwrite = TRUE)
 
 quarto::quarto_render("./outputs/report.qmd", output_format = "html", quiet = TRUE)
 

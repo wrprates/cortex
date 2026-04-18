@@ -1,0 +1,363 @@
+---
+title: "Diagnóstico de Qualidade dos Dados"
+subtitle: "Cortex / DS-Agents"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    code-fold: true
+    code-summary: "ver código"
+    theme: cosmo
+    self-contained: true
+    fig-width: 9
+    fig-height: 5
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(jsonlite)
+  library(gt)
+  library(echarts4r)
+})
+
+# summary.json e analysis.rds ficam no mesmo diretório que o .qmd (./outputs/)
+s  <- fromJSON("summary.json", simplifyVector = FALSE)
+an <- readRDS("analysis.rds")
+df <- an$df_clean
+
+# --- Helpers locais ------------------------------------------------------
+fmt_pct   <- function(x) ifelse(is.na(x), "—", sprintf("%.1f%%", x))
+fmt_num   <- function(x) ifelse(is.na(x), "—", formatC(x, big.mark = ",", format = "f", digits = 2))
+fmt_int   <- function(x) ifelse(is.na(x), "—", formatC(x, big.mark = ",", format = "d"))
+action_badge <- function(a) {
+  color <- switch(a,
+    "kept" = "#28a745", "imputed_median" = "#17a2b8", "imputed_mode" = "#17a2b8",
+    "dropped" = "#dc3545", "rows_removed" = "#ffc107", "parsed" = "#6f42c1",
+    "#6c757d"
+  )
+  sprintf('<span style="background:%s;color:#fff;padding:2px 8px;border-radius:3px;font-size:0.85em;">%s</span>', color, a)
+}
+
+# Transformando s$columns (lista) em data.frame plano pra usar em tabelas.
+cols_df <- map_dfr(names(s$columns), function(nm) {
+  r <- s$columns[[nm]]
+  tibble(
+    column   = nm,
+    type     = r$semantic_type %||% NA_character_,
+    action   = r$action        %||% NA_character_,
+    missing  = as.numeric(r$n_missing   %||% NA),
+    pct_miss = as.numeric(r$pct_missing %||% NA),
+    n_findings = length(r$findings %||% list())
+  )
+})
+
+numeric_cols <- cols_df %>% filter(type %in% c("numeric", "integer")) %>% pull(column)
+categorical_cols <- cols_df %>% filter(type == "categorical") %>% pull(column)
+boolean_cols <- cols_df %>% filter(type == "boolean") %>% pull(column)
+```
+
+## Executive Overview
+
+```{r overview}
+ds <- s$dataset
+overview_tbl <- tibble(
+  Métrica = c("Arquivo", "Linhas (originais → finais)", "Colunas (originais → finais)",
+              "Linhas removidas", "Colunas removidas"),
+  Valor = c(
+    ds$file,
+    sprintf("%s → %s", fmt_int(ds$rows_original), fmt_int(ds$rows_final)),
+    sprintf("%s → %s", fmt_int(ds$cols_original), fmt_int(ds$cols_final)),
+    fmt_int(ds$rows_removed),
+    fmt_int(ds$cols_dropped)
+  )
+)
+gt(overview_tbl) %>%
+  tab_options(table.width = pct(60), table.font.size = px(14)) %>%
+  cols_label(Métrica = "", Valor = "")
+```
+
+### Ações aplicadas por coluna
+
+```{r action-summary}
+if (nrow(cols_df) > 0) {
+  cols_df %>%
+    count(action, sort = TRUE) %>%
+    e_charts(action) %>%
+    e_bar(n, legend = FALSE, name = "colunas") %>%
+    e_flip_coords() %>%
+    e_tooltip() %>%
+    e_title("Ações de tratamento (total por tipo)") %>%
+    e_theme("westeros")
+} else {
+  cat("_(sem dados)_")
+}
+```
+
+## Valores Ausentes
+
+```{r missing-chart}
+miss_df <- cols_df %>%
+  filter(!is.na(pct_miss), pct_miss > 0) %>%
+  arrange(desc(pct_miss))
+
+if (nrow(miss_df) > 0) {
+  miss_df %>%
+    e_charts(column) %>%
+    e_bar(pct_miss, legend = FALSE, name = "% NA") %>%
+    e_flip_coords() %>%
+    e_tooltip() %>%
+    e_title("NA% por coluna (só com NA > 0)") %>%
+    e_theme("westeros")
+} else {
+  cat("✅ Nenhuma coluna com valores ausentes.")
+}
+```
+
+## Colunas Numéricas
+
+```{r numeric-stats}
+if (length(numeric_cols) > 0) {
+  num_stats <- map_dfr(numeric_cols, function(nm) {
+    r <- s$columns[[nm]]
+    x <- df[[nm]]
+    tibble(
+      column = nm,
+      n      = sum(!is.na(x)),
+      min    = suppressWarnings(min(x, na.rm = TRUE)),
+      q1     = as.numeric(r$q1     %||% NA),
+      median = as.numeric(r$median %||% NA),
+      mean   = mean(x, na.rm = TRUE),
+      q3     = as.numeric(r$q3     %||% NA),
+      max    = suppressWarnings(max(x, na.rm = TRUE)),
+      sd     = sd(x, na.rm = TRUE),
+      pct_na = as.numeric(r$pct_missing %||% 0),
+      pct_outliers = as.numeric(r$pct_outliers_iqr %||% 0)
+    )
+  })
+  gt(num_stats) %>%
+    fmt_number(columns = c(min, q1, median, mean, q3, max, sd), decimals = 2) %>%
+    fmt_number(columns = c(pct_na, pct_outliers), decimals = 1, pattern = "{x}%") %>%
+    fmt_integer(columns = c(n)) %>%
+    tab_header(title = md("**Estatísticas descritivas** (pós-tratamento)")) %>%
+    data_color(
+      columns = pct_na,
+      fn = scales::col_numeric(palette = c("#e8f5e9", "#ffcdd2"), domain = c(0, 100))
+    ) %>%
+    data_color(
+      columns = pct_outliers,
+      fn = scales::col_numeric(palette = c("#e8f5e9", "#ffe0b2"), domain = c(0, 30))
+    ) %>%
+    tab_options(table.font.size = px(13))
+} else {
+  cat("_(nenhuma coluna numérica detectada)_")
+}
+```
+
+### Distribuições (boxplots)
+
+```{r numeric-boxplots, fig.width=10, fig.height=6}
+if (length(numeric_cols) > 0) {
+  # Boxplot matricial (base R) — mostra até 12 colunas pra não explodir layout
+  cols_show <- head(numeric_cols, 12)
+  n_show <- length(cols_show)
+  ncol_grid <- ifelse(n_show <= 4, n_show, 4)
+  nrow_grid <- ceiling(n_show / ncol_grid)
+  op <- par(mfrow = c(nrow_grid, ncol_grid), mar = c(3, 3, 2.2, 0.5))
+  for (nm in cols_show) {
+    boxplot(df[[nm]], main = nm, col = "#64b5f6", border = "#1565c0",
+            outcol = "#d32f2f", outpch = 20, horizontal = TRUE)
+  }
+  par(op)
+  if (length(numeric_cols) > 12) {
+    cat(sprintf("\n_(exibindo 12 de %d colunas numéricas)_\n", length(numeric_cols)))
+  }
+} else {
+  cat("_(nenhuma coluna numérica detectada)_")
+}
+```
+
+## Colunas Categóricas
+
+```{r categorical-overview}
+if (length(categorical_cols) > 0) {
+  cat_df <- map_dfr(categorical_cols, function(nm) {
+    r <- s$columns[[nm]]
+    tibble(
+      column = nm,
+      cardinality = as.integer(r$cardinality %||% NA),
+      n_rare = as.integer(r$n_rare_levels %||% 0),
+      pct_na = as.numeric(r$pct_missing %||% 0),
+      action = r$action %||% "kept"
+    )
+  })
+  gt(cat_df) %>%
+    fmt_integer(columns = c(cardinality, n_rare)) %>%
+    fmt_number(columns = pct_na, decimals = 1, pattern = "{x}%") %>%
+    tab_header(title = md("**Colunas categóricas** — cardinalidade e NA%")) %>%
+    tab_options(table.font.size = px(13))
+} else {
+  cat("_(nenhuma coluna categórica detectada)_")
+}
+```
+
+### Top níveis por coluna
+
+```{r categorical-top-levels, results='asis'}
+if (length(categorical_cols) > 0) {
+  for (nm in head(categorical_cols, 10)) {
+    tl <- s$columns[[nm]]$top_levels
+    if (is.null(tl) || length(tl) == 0) next
+    df_tl <- tibble(
+      level = names(tl),
+      count = as.integer(unlist(tl))
+    ) %>% arrange(desc(count)) %>% head(10)
+
+    cat(sprintf("\n\n#### `%s`\n\n", nm))
+    print(
+      df_tl %>%
+        e_charts(level) %>%
+        e_bar(count, legend = FALSE, name = "registros") %>%
+        e_flip_coords() %>%
+        e_tooltip() %>%
+        e_theme("westeros")
+    )
+  }
+  if (length(categorical_cols) > 10) {
+    cat(sprintf("\n_(exibindo 10 de %d colunas categóricas — ver tabela acima)_\n", length(categorical_cols)))
+  }
+}
+```
+
+## Colunas Booleanas
+
+```{r boolean-overview}
+if (length(boolean_cols) > 0) {
+  bool_df <- map_dfr(boolean_cols, function(nm) {
+    r <- s$columns[[nm]]
+    tibble(
+      column = nm,
+      prop_true = as.numeric(r$prop_true %||% NA),
+      pct_na = as.numeric(r$pct_missing %||% 0)
+    )
+  })
+  gt(bool_df) %>%
+    fmt_number(columns = prop_true, decimals = 3) %>%
+    fmt_number(columns = pct_na, decimals = 1, pattern = "{x}%") %>%
+    tab_header(title = md("**Colunas booleanas** — proporção TRUE")) %>%
+    tab_options(table.font.size = px(13))
+} else {
+  cat("_(nenhuma coluna booleana detectada)_")
+}
+```
+
+## Target Analysis
+
+```{r target-analysis, results='asis'}
+target_info <- s$target %||% NULL
+if (!is.null(target_info) && !is.null(target_info$column)) {
+  tcol <- target_info$column
+  cat(sprintf("Coluna-alvo detectada: **`%s`** (tipo: `%s`)\n\n", tcol, target_info$type %||% "?"))
+
+  # Distribuição do target
+  dist <- target_info$distribution
+  if (!is.null(dist) && length(dist) > 0) {
+    dist_df <- tibble(
+      level = names(dist),
+      count = as.integer(unlist(dist))
+    ) %>% arrange(desc(count))
+    cat("### Distribuição\n\n")
+    print(
+      dist_df %>%
+        e_charts(level) %>%
+        e_bar(count, legend = FALSE, name = "registros") %>%
+        e_tooltip() %>%
+        e_title(sprintf("Distribuição de %s", tcol)) %>%
+        e_theme("westeros")
+    )
+  }
+
+  # Taxa do target por categórica
+  rates_by <- target_info$rate_by_categorical
+  if (!is.null(rates_by) && length(rates_by) > 0) {
+    cat("\n\n### Taxa do target por categoria (top 5 discriminantes)\n\n")
+    for (nm in names(rates_by)) {
+      rb <- rates_by[[nm]]
+      if (is.null(rb) || length(rb) == 0) next
+      rb_df <- tibble(
+        level = names(rb),
+        rate = as.numeric(unlist(rb))
+      ) %>% arrange(desc(rate))
+      cat(sprintf("\n#### `%s`\n\n", nm))
+      print(
+        rb_df %>%
+          e_charts(level) %>%
+          e_bar(rate, legend = FALSE, name = sprintf("P(%s+)", tcol)) %>%
+          e_flip_coords() %>%
+          e_tooltip() %>%
+          e_theme("westeros")
+      )
+    }
+  }
+} else {
+  cat("_(nenhuma coluna parece ser target — heurística busca nomes `churn`, `target`, `label`, `y`, `class`, `outcome` ou booleans marcadamente discriminantes)_")
+}
+```
+
+## Alertas de Qualidade
+
+```{r alerts, results='asis'}
+alerts <- map_dfr(names(s$columns), function(nm) {
+  f <- s$columns[[nm]]$findings
+  if (is.null(f) || length(f) == 0) return(tibble())
+  tibble(column = nm, finding = unlist(f))
+})
+if (nrow(alerts) > 0) {
+  gt(alerts) %>%
+    tab_header(title = md("**Findings** (observações a avaliar)")) %>%
+    tab_options(table.font.size = px(13)) %>%
+    cols_label(column = "Coluna", finding = "Observação") %>%
+    print()
+} else {
+  cat("✅ Nenhum alerta — nenhuma coluna acionou heurística crítica.\n")
+}
+```
+
+## Detalhe por Coluna
+
+```{r per-column, results='asis'}
+per_col <- cols_df %>%
+  arrange(desc(n_findings), column)
+
+for (i in seq_len(nrow(per_col))) {
+  row <- per_col[i, ]
+  nm <- row$column
+  r  <- s$columns[[nm]]
+  cat(sprintf('\n### `%s` <span style="font-size:0.8em;color:#6c757d;">%s</span>\n\n',
+              nm, action_badge(row$action)))
+  cat(sprintf("- **tipo semântico:** `%s`\n", row$type))
+  cat(sprintf("- **missing:** %s (%s)\n", fmt_int(row$missing), fmt_pct(row$pct_miss)))
+  if (!is.null(r$cardinality))   cat(sprintf("- **cardinalidade:** %s\n", fmt_int(r$cardinality)))
+  if (!is.null(r$median))        cat(sprintf("- **mediana:** %s · **Q1:** %s · **Q3:** %s\n",
+                                             fmt_num(r$median), fmt_num(r$q1), fmt_num(r$q3)))
+  if (!is.null(r$pct_outliers_iqr)) cat(sprintf("- **outliers IQR:** %s\n",
+                                                 fmt_pct(r$pct_outliers_iqr)))
+  if (!is.null(r$prop_true))     cat(sprintf("- **proporção TRUE:** %.3f\n", as.numeric(r$prop_true)))
+  if (!is.null(r$range))         cat(sprintf("- **range:** %s\n", r$range))
+  if (length(r$findings) > 0) {
+    cat("\n**Findings:**\n\n")
+    for (f in r$findings) cat(sprintf("- %s\n", f))
+  }
+  cat("\n")
+}
+```
+
+---
+
+_Relatório gerado pelo Cortex Quality Pipeline (determinístico — zero LLM). Template em `agent-core/src/templates/r_quality/report.qmd`._
