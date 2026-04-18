@@ -17,6 +17,8 @@ from .schemas import (
     ProjectOut,
     RunOut,
     RunStart,
+    TickIn,
+    TickOut,
 )
 
 router = APIRouter()
@@ -169,6 +171,83 @@ async def start_run(payload: RunStart, background: BackgroundTasks) -> RunOut:
     )
     t.start()
     return RunOut(**row)
+
+
+@router.post("/ticks", response_model=TickOut)
+async def tick(payload: TickIn, background: BackgroundTasks) -> TickOut:
+    """
+    Um "tick" do Cortex: pega a próxima issue claimável do backlog do projeto,
+    claim via label `cortex:in-progress` e dispara um run. Retorna sempre 200
+    com `status` discriminado (started | idle | skipped) — idle/skipped não
+    são erros, são estados normais do loop de polling.
+    """
+    project = await db.fetch_project(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    client_id = project.get("client_id")
+    if client_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="project has no client; ticks require a client with github_repo",
+        )
+    client = await db.fetch_client(client_id)
+    github_repo = (client or {}).get("github_repo")
+    if not github_repo:
+        raise HTTPException(status_code=409, detail="client has no github_repo configured")
+
+    # 1. Candidatos
+    issues = github_pm.list_claimable_issues(github_repo)
+    if not issues:
+        return TickOut(status="idle", reason="no claimable issues")
+
+    # 2. Mais antiga (updated_at asc no list_claimable_issues) — anti-starvation
+    target = issues[0]
+    kind = github_pm.get_issue_kind(target)
+    if kind is None:
+        return TickOut(status="idle", reason="no claimable issues")
+
+    # 3. Claim; se perdeu race, devolve skipped
+    if not github_pm.claim_issue(github_repo, target["number"]):
+        return TickOut(
+            status="skipped",
+            reason=f"race lost on issue #{target['number']}",
+            issue_number=target["number"],
+            issue_kind=kind,
+            issue_title=target.get("title"),
+        )
+
+    # 4. Cria run com contexto da issue e dispara thread
+    row = await db.insert_run(
+        payload.project_id,
+        issue_number=target["number"],
+        issue_kind=kind,
+        issue_title=target.get("title"),
+    )
+    threading.Thread(
+        target=runs_service.start_run,
+        kwargs={
+            "run_id": row["id"],
+            "project_id": payload.project_id,
+            "description": project["description"] or "",
+            "datasets": payload.datasets,
+            "workflow_type": project.get("workflow_type", "full_ml"),
+            "client_id": str(client_id),
+            "github_repo": github_repo,
+            "issue_number": target["number"],
+            "issue_kind": kind,
+            "issue_title": target.get("title"),
+        },
+        daemon=True,
+    ).start()
+
+    return TickOut(
+        status="started",
+        run_id=row["id"],
+        issue_number=target["number"],
+        issue_kind=kind,
+        issue_title=target.get("title"),
+    )
 
 
 @router.get("/runs/{run_id}", response_model=RunOut)

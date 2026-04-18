@@ -16,6 +16,12 @@ class ProjectState(TypedDict, total=False):
     client_id: str  # UUID do cliente
     github_repo: str  # URL do repo do cliente (se houver)
 
+    # Issue-driven context (sprint 1/B3, teammate mode). Populados quando o
+    # run é disparado via POST /v1/ticks; ausentes em runs legados.
+    issue_number: int
+    issue_kind: str  # quality | eda | modeling | review
+    issue_title: str
+
     current_phase: str  # "probing" | "planning" | "quality" | "hypothesis" | "modeling" | "review" | "reporting" | "done"
     datasets: list[str]
 
