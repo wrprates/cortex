@@ -36,7 +36,8 @@
 }
 
 .reveal .slides { text-align: left; }
-.reveal .slides section { padding: 2vh 4vw; }
+/* Sem padding custom: reveal.js já reserva margem via config.margin.
+   Seu próprio espaço interno era o que empurrava conteúdo pra baixo/direita. */
 
 .reveal h1, .reveal h2, .reveal h3 {
   font-family: 'Inter', sans-serif;
@@ -508,8 +509,11 @@
     transitionSpeed: 'default',
     controls: true,
     progress: true,
-    center: false,
+    center: true,             // centraliza vertical; elimina espaço morto acima
     slideNumber: 'c/t',
+    width: 1280,              // 16:9 em vez do default 4:3 (960x700) — menos letterbox
+    height: 720,
+    margin: 0.04,             // 4% de respiro interno automático
     plugins: [ RevealHighlight ]
   });
 </script>
