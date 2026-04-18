@@ -211,3 +211,45 @@ class TestReleaseClaim:
         with respx.mock() as rx:
             rx.delete(self.LABEL_URL).mock(return_value=httpx.Response(500))
             assert github_pm.release_claim(REPO_URL, 42) is False
+
+
+# --------- close_issue ---------
+
+
+class TestCloseIssue:
+    ISSUE_URL = "https://api.github.com/repos/wrprates/demo-repo/issues/42"
+
+    def test_close_succeeds_with_completed_reason(self, fake_settings):
+        with respx.mock() as rx:
+            route = rx.patch(self.ISSUE_URL).mock(
+                return_value=httpx.Response(200, json={"number": 42, "state": "closed"})
+            )
+            assert github_pm.close_issue(REPO_URL, 42) is True
+            assert route.called
+            # Confirma que o body leva reason=completed (o default).
+            body = route.calls.last.request.content.decode()
+            assert '"state": "closed"' in body
+            assert '"state_reason": "completed"' in body
+
+    def test_close_fails_on_404(self, fake_settings):
+        with respx.mock() as rx:
+            rx.patch(self.ISSUE_URL).mock(return_value=httpx.Response(404))
+            assert github_pm.close_issue(REPO_URL, 42) is False
+
+    def test_close_fails_on_500(self, fake_settings):
+        with respx.mock() as rx:
+            rx.patch(self.ISSUE_URL).mock(return_value=httpx.Response(500))
+            assert github_pm.close_issue(REPO_URL, 42) is False
+
+    def test_close_accepts_not_planned_reason(self, fake_settings):
+        """
+        `not_planned` é usado quando a issue foi descartada (ex: claim race
+        perdida, ou rejected_by_human). GitHub diferencia no UI.
+        """
+        with respx.mock() as rx:
+            route = rx.patch(self.ISSUE_URL).mock(
+                return_value=httpx.Response(200, json={})
+            )
+            assert github_pm.close_issue(REPO_URL, 42, reason="not_planned") is True
+            body = route.calls.last.request.content.decode()
+            assert '"state_reason": "not_planned"' in body
