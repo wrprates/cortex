@@ -901,6 +901,12 @@ def node_report(state: ProjectState) -> dict:
             logger.exception("github report-commit error: %s", e)
             push_info = {"status": f"error:{type(e).__name__}", "error": str(e)}
 
+    # Sprint 1/B4: fecha o ciclo da issue-driver (a que o humano abriu e o
+    # Cortex pegou via /v1/ticks). Chamar mesmo com push falhando libera o
+    # claim pra a issue não ficar órfã com `cortex:in-progress` travado.
+    if repo_url:
+        _close_issue_driven_cycle(state, repo_url, push_ok=push_info.get("ok") is True)
+
     report["_github_push"] = push_info
     if pr_info is not None:
         report["_github_pr"] = pr_info
@@ -909,6 +915,38 @@ def node_report(state: ProjectState) -> dict:
         "current_phase": "done",
         "status": "completed",
     }
+
+
+def _close_issue_driven_cycle(
+    state: ProjectState, repo_url: str, *, push_ok: bool
+) -> None:
+    """
+    Fecha o ciclo da issue-driver no GitHub ao final do run.
+
+    - Libera o claim (`cortex:in-progress`) **sempre** que há `issue_number`
+      no state, mesmo se o push falhou. Sem isso a issue fica travada e
+      ninguém — nem humano, nem outro agente — consegue retomar o trabalho.
+    - Fecha a issue (`state=closed`) só se o push deu certo. Se falhou,
+      deixa aberta pra o próximo tick pegar de novo e tentar recuperar.
+
+    No-op silencioso se o run não é issue-driven (runs legados via
+    POST /v1/runs não populam `issue_number`).
+    """
+    from ..storage import github_pm
+
+    issue_number = state.get("issue_number")
+    if not issue_number:
+        return
+    try:
+        github_pm.release_claim(repo_url, int(issue_number))
+        if push_ok:
+            github_pm.close_issue(repo_url, int(issue_number), reason="completed")
+    except Exception as e:
+        # Best-effort: se falhar aqui, o run já fez o trabalho útil; o humano
+        # consegue limpar manualmente via botão de close/remover label.
+        logger.warning(
+            "close_issue_driven_cycle issue=#%s falhou: %s", issue_number, e
+        )
 
 
 def route_after_quality(state: ProjectState) -> str:
