@@ -87,6 +87,41 @@ class RunOut(BaseModel):
     status: str
     started_at: datetime
     finished_at: datetime | None = None
+    # Presentes quando o run foi disparado via POST /v1/ticks (teammate mode).
+    issue_number: int | None = None
+    issue_kind: str | None = None
+    issue_title: str | None = None
+
+
+class TickIn(BaseModel):
+    """
+    Input do endpoint `POST /v1/ticks`: dispara 1 ciclo de claim+run.
+
+    O Cortex olha o backlog do `project_id`, pega a issue `cortex:*` mais
+    antiga sem `cortex:in-progress`, faz claim e inicia o run. Se não
+    houver issue elegível ou se perder a race do claim, retorna sem
+    criar run — HTTP 200 com status no body.
+    """
+
+    project_id: UUID
+    datasets: list[str] = Field(default_factory=list)
+
+
+class TickOut(BaseModel):
+    """
+    Resultado de um tick. `status` discrimina o que aconteceu:
+
+    - `started`: claim foi bem sucedido e o run foi criado (201).
+    - `idle`:    backlog vazio (200).
+    - `skipped`: claim perdeu a race pra outro agente/humano (200).
+    """
+
+    status: str  # started | idle | skipped
+    reason: str | None = None
+    run_id: UUID | None = None
+    issue_number: int | None = None
+    issue_kind: str | None = None
+    issue_title: str | None = None
 
 
 class BacklogItem(BaseModel):

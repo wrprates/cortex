@@ -26,14 +26,26 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_id);
 
 CREATE TABLE IF NOT EXISTS runs (
-    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    status       TEXT NOT NULL DEFAULT 'active',
-    started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    finished_at  TIMESTAMPTZ,
-    final_state  JSONB
+    id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id    UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'active',
+    started_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at   TIMESTAMPTZ,
+    final_state   JSONB,
+    -- Campos de rastreamento issue-driven (sprint 1/B3, plano teammate mode).
+    -- Opcionais pra preservar runs legados disparados via POST /v1/runs.
+    issue_number  INTEGER,
+    issue_kind    TEXT,
+    issue_title   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
+
+-- ALTERs idempotentes pra bancos que foram criados antes da sprint 1/B3.
+-- Novos deploys pegam as colunas via CREATE TABLE acima; bancos em produção
+-- precisam desses ALTERs porque init-db.sql não roda de novo.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS issue_number INTEGER;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS issue_kind TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS issue_title TEXT;
 
 CREATE TABLE IF NOT EXISTS tasks (
     id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

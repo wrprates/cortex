@@ -32,6 +32,9 @@ def start_run(
     workflow_type: str = "full_ml",
     client_id: str | None = None,
     github_repo: str | None = None,
+    issue_number: int | None = None,
+    issue_kind: str | None = None,
+    issue_title: str | None = None,
 ) -> dict:
     """Dispara o grafo até a primeira interrupção (human approval do plano)."""
     logger.warning("start_run ENTRY run_id=%s project_id=%s workflow=%s", run_id, project_id, workflow_type)
@@ -47,6 +50,14 @@ def start_run(
         "status": "active",
         "review_loop_count": 0,
     }
+    # Issue-driven run (teammate mode): propaga contexto da issue pro state
+    # pra nós futuros (pick_issue / node_report / self_review) poderem ler.
+    if issue_number is not None:
+        initial["issue_number"] = issue_number
+    if issue_kind:
+        initial["issue_kind"] = issue_kind
+    if issue_title:
+        initial["issue_title"] = issue_title
     logger.warning("start_run BEFORE_INVOKE run_id=%s", run_id)
     settings = get_settings()
     structlog.contextvars.bind_contextvars(run_id=str(run_id), project_id=str(project_id))

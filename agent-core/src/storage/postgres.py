@@ -108,17 +108,34 @@ async def fetch_project(project_id: UUID) -> dict | None:
         return dict(row) if row else None
 
 
-async def insert_run(project_id: UUID) -> dict:
+async def insert_run(
+    project_id: UUID,
+    *,
+    issue_number: int | None = None,
+    issue_kind: str | None = None,
+    issue_title: str | None = None,
+) -> dict:
+    """
+    Insere row em `runs`. Os campos `issue_*` são opcionais (preservam runs
+    legacy via POST /v1/runs). Quando presentes, marcam o run como
+    issue-driven (sprint 1/B3, teammate mode).
+    """
     async with session() as s:
         result = await s.execute(
             text(
                 """
-                INSERT INTO runs (project_id)
-                VALUES (:project_id)
-                RETURNING id, project_id, status, started_at, finished_at
+                INSERT INTO runs (project_id, issue_number, issue_kind, issue_title)
+                VALUES (:project_id, :issue_number, :issue_kind, :issue_title)
+                RETURNING id, project_id, status, started_at, finished_at,
+                          issue_number, issue_kind, issue_title
                 """
             ),
-            {"project_id": project_id},
+            {
+                "project_id": project_id,
+                "issue_number": issue_number,
+                "issue_kind": issue_kind,
+                "issue_title": issue_title,
+            },
         )
         row = result.mappings().one()
         await s.commit()
@@ -129,7 +146,8 @@ async def fetch_run(run_id: UUID) -> dict | None:
     async with session() as s:
         result = await s.execute(
             text(
-                "SELECT id, project_id, status, started_at, finished_at "
+                "SELECT id, project_id, status, started_at, finished_at, "
+                "issue_number, issue_kind, issue_title "
                 "FROM runs WHERE id = :id"
             ),
             {"id": run_id},
