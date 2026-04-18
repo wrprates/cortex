@@ -56,7 +56,7 @@ RUN pip install --upgrade pip && pip install \
 
 # R packages (tidyverse stack + visualização + quarto)
 # pkgs listados; após install, verifica cada um com require() e aborta se faltar
-RUN R -e "pkgs <- c('tidyverse','data.table','ggplot2','echarts4r','plotly','DT','jsonlite','rmarkdown','quarto','tidymodels','ranger','xgboost','lubridate','htmlwidgets','broom','skimr'); \
+RUN R -e "pkgs <- c('tidyverse','data.table','ggplot2','echarts4r','plotly','DT','gt','jsonlite','rmarkdown','quarto','tidymodels','ranger','xgboost','lubridate','htmlwidgets','broom','skimr'); \
 install.packages(pkgs, repos='https://cloud.r-project.org', Ncpus=4); \
 missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly=TRUE)]; \
 if (length(missing)) stop('R packages missing after install: ', paste(missing, collapse=', ')); \

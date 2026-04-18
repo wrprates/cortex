@@ -32,6 +32,14 @@ _TEMPLATE_PATH = (
     Path(__file__).resolve().parent.parent
     / "templates" / "r_quality" / "quality_main.R"
 )
+# Template Quarto renderizado pelo script R. Fica fora do script porque
+# (1) é longo e seria horroroso em writeLines(), (2) permite editar o layout
+# do relatório sem mexer no dispatcher/scripts, (3) versiona no repo pra ser
+# auditável.
+_QMD_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "templates" / "r_quality" / "report.qmd"
+)
 
 
 def _classify_column(col_info: dict[str, Any], total_rows: int) -> str:
@@ -178,10 +186,13 @@ def run_quality_dispatcher(
     """
     config = classify_profile(dataset_profile)
 
-    # Injeta o config JSON como input adicional; o R lê via ./inputs/__column_types.json
+    # Injeta o config JSON + template QMD como inputs adicionais; o R lê
+    # via ./inputs/__column_types.json e ./inputs/__report_template.qmd.
     config_bytes = json.dumps(config, ensure_ascii=False).encode()
+    qmd_bytes = _QMD_TEMPLATE_PATH.read_bytes()
     inputs_ext = dict(inputs)
     inputs_ext["__column_types.json"] = config_bytes
+    inputs_ext["__report_template.qmd"] = qmd_bytes
 
     r_script = _TEMPLATE_PATH.read_text(encoding="utf-8")
 
