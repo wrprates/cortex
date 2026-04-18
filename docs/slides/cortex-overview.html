@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortex — Engineering Showcase</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css" id="theme">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+
+<style>
+:root {
+  --accent: #3b5bdb;
+  --accent-soft: #edf2ff;
+  --ink: #1a1d24;
+  --muted: #5c6370;
+  --border: #e5e7eb;
+  --ok: #12b886;
+  --warn: #f59f00;
+  --danger: #e03131;
+  --bg-subtle: #fafbfc;
+}
+
+.reveal {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-weight: 400;
+  color: var(--ink);
+  /* reveal.js default é 40px; encolhemos pra tudo caber sem overflow. Como as
+     demais regras usam em, esta única linha redimensiona o deck inteiro. */
+  font-size: 26px;
+}
+
+.reveal .slides { text-align: left; }
+/* Sem padding custom: reveal.js já reserva margem via config.margin.
+   Seu próprio espaço interno era o que empurrava conteúdo pra baixo/direita. */
+
+.reveal h1, .reveal h2, .reveal h3 {
+  font-family: 'Inter', sans-serif;
+  font-weight: 700;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.4em;
+}
+.reveal h1 { font-size: 2.8em; line-height: 1.1; }
+.reveal h2 { font-size: 1.9em; line-height: 1.15; }
+.reveal h3 { font-size: 1.2em; color: var(--accent); font-weight: 600; }
+
+.reveal p, .reveal li { font-size: 0.85em; line-height: 1.55; color: var(--ink); }
+.reveal small { font-size: 0.55em; color: var(--muted); }
+
+.reveal code {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.9em;
+}
+
+.reveal pre {
+  box-shadow: 0 4px 20px rgba(0,0,0,.08);
+  border-radius: 8px;
+  font-size: 0.55em;
+}
+.reveal pre code {
+  background: #1a1d24;
+  color: #d1d5db;
+  padding: 1.2em;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.reveal ul, .reveal ol { margin-left: 1em; }
+.reveal li { margin-bottom: 0.4em; }
+.reveal li::marker { color: var(--accent); }
+
+.reveal a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+
+.reveal .slide-background.present { background: #fff; }
+.reveal .progress { color: var(--accent); }
+.reveal .controls { color: var(--accent); }
+
+/* Title slide */
+.title-slide {
+  background: linear-gradient(135deg, #f5f7ff 0%, #ffffff 50%, #f0fff7 100%);
+  text-align: center !important;
+}
+.title-slide h1 {
+  font-size: 4em;
+  background: linear-gradient(90deg, #3b5bdb 0%, #12b886 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.2em;
+}
+.title-slide .subtitle {
+  font-size: 1.3em;
+  color: var(--muted);
+  font-weight: 500;
+  margin-bottom: 1em;
+}
+.title-slide .tagline {
+  display: inline-block;
+  padding: 10px 24px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  font-size: 0.7em;
+  color: var(--accent);
+  font-family: 'JetBrains Mono', monospace;
+  box-shadow: 0 2px 10px rgba(0,0,0,.04);
+}
+
+/* Quote slide */
+.quote-slide { text-align: center !important; }
+.quote-slide .quote {
+  font-size: 2.2em;
+  font-weight: 600;
+  line-height: 1.3;
+  max-width: 18em;
+  margin: 0 auto;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.quote-slide .quote em {
+  font-style: normal;
+  color: var(--accent);
+}
+.quote-slide .sub {
+  margin-top: 1em;
+  color: var(--muted);
+  font-size: 0.95em;
+}
+
+/* Card grids */
+.grid {
+  display: grid;
+  gap: 20px;
+  margin-top: 0.6em;
+}
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+
+.card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1em 1.1em;
+  font-size: 0.78em;
+}
+.card .icon { font-size: 1.8em; margin-bottom: 0.3em; }
+.card h4 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0 0 0.5em 0;
+  color: var(--ink);
+}
+.card p { margin: 0; font-size: 0.95em; color: var(--muted); line-height: 1.5; }
+.card.accent {
+  background: linear-gradient(135deg, var(--accent-soft) 0%, white 100%);
+  border-color: var(--accent);
+}
+
+/* Pipeline flow */
+.pipeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65em;
+  margin: 1em 0;
+  flex-wrap: wrap;
+}
+.pipeline .node {
+  padding: 10px 18px;
+  background: white;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  color: var(--ink);
+  font-weight: 500;
+}
+.pipeline .node.interrupt { border-color: var(--warn); background: #fff9db; }
+.pipeline .node.terminal { border-color: var(--ok); background: #e6fcf5; }
+.pipeline .arrow { color: var(--muted); font-size: 1.2em; }
+
+.badge {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 0.7em;
+  border-radius: 12px;
+  font-weight: 500;
+  margin-right: 6px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.badge.ok { background: #e6fcf5; color: var(--ok); }
+.badge.wip { background: #fff9db; color: var(--warn); }
+.badge.queued { background: #f1f3f5; color: var(--muted); }
+
+/* Stack table */
+.reveal table {
+  font-size: 0.65em;
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  margin-top: 0.8em;
+}
+.reveal th {
+  background: var(--ink);
+  color: white;
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+}
+.reveal th:first-child { border-top-left-radius: 8px; }
+.reveal th:last-child { border-top-right-radius: 8px; }
+.reveal td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.reveal tr:last-child td { border-bottom: none; }
+.reveal tr:nth-child(even) td { background: var(--bg-subtle); }
+
+/* Takeaways */
+.takeaway {
+  padding: 14px 18px;
+  background: white;
+  border-left: 4px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  margin: 10px 0;
+  font-size: 0.8em;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+.takeaway strong { color: var(--accent); }
+
+/* Architecture diagram */
+.arch {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  gap: 16px;
+  margin-top: 0.5em;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6em;
+}
+.arch .row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 14px;
+}
+.arch .box {
+  padding: 12px 18px;
+  background: white;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  min-width: 140px;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,.04);
+}
+.arch .box.primary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.arch .box.sandbox { border-color: var(--ok); background: #e6fcf5; color: var(--ok); font-weight: 600; }
+.arch .box.store { border-color: var(--muted); background: var(--bg-subtle); }
+.arch .connector { color: var(--muted); font-size: 1.4em; }
+.arch .note {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9em;
+  margin-top: 8px;
+  font-family: 'Inter', sans-serif;
+}
+</style>
+</head>
+<body>
+
+<div class="reveal">
+<div class="slides">
+
+<!-- 1. Title -->
+<section class="title-slide">
+  <h1>Cortex</h1>
+  <div class="subtitle">A data-science teammate that works on GitHub issues alongside you</div>
+  <div class="tagline">LangGraph · FastAPI · R (tidyverse/tidymodels/Quarto) · Docker sandbox</div>
+  <p style="margin-top:2.5em;font-size:0.7em;color:var(--muted);">Engineering showcase · 2026</p>
+</section>
+
+<!-- 2. Problem -->
+<section>
+  <h2>The problem with "autonomous DS agents"</h2>
+  <div class="grid grid-2" style="margin-top:1.2em;">
+    <div class="card fragment">
+      <div class="icon">🤖</div>
+      <h4>They overreach</h4>
+      <p>Demos pretend the whole pipeline runs unattended. Reality hits — schema drift, a weird column, a flaky library — and they crash opaquely.</p>
+    </div>
+    <div class="card fragment">
+      <div class="icon">📦</div>
+      <h4>One-shot outputs</h4>
+      <p>When they "work," the result is a zip of code + charts. No PR, no review, no incremental history you can trust.</p>
+    </div>
+    <div class="card fragment">
+      <div class="icon">🔁</div>
+      <h4>Restart culture</h4>
+      <p>Every run starts from zero. Nothing compounds. Humans can't pick up where the agent left off, and vice-versa.</p>
+    </div>
+    <div class="card accent fragment">
+      <div class="icon">🤝</div>
+      <h4>DS is collaborative</h4>
+      <p>What's needed is a <strong>teammate</strong> — works on individual tickets, respects your WIP, lets you review.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 3. Design principle -->
+<section class="quote-slide">
+  <div class="quote fragment fade-in-then-semi-out">
+    Cortex is a <em>teammate</em>,<br>not an autonomous agent.
+  </div>
+  <p class="sub fragment" style="margin-top:2em;font-size:1.1em;">
+    <code>1 issue = 1 run = 1 PR</code>
+  </p>
+  <div class="grid grid-3 fragment" style="margin-top:2em;max-width:900px;margin-left:auto;margin-right:auto;">
+    <div class="card">
+      <h4>Shared backlog</h4>
+      <p>You and Cortex pull from the same GitHub issues. Nobody collides.</p>
+    </div>
+    <div class="card">
+      <h4>Human owns merge</h4>
+      <p>Cortex opens PRs. You review and merge like for any colleague.</p>
+    </div>
+    <div class="card">
+      <h4>Fail loud</h4>
+      <p>Real blockers surface immediately. No "are you sure?" on trivia.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Architecture -->
+<section>
+  <h2>Architecture</h2>
+  <div class="arch">
+    <div class="row fragment">
+      <div class="box">GitHub Issues<br><small style="color:var(--muted)">backlog</small></div>
+      <span class="connector">→</span>
+      <div class="box primary">FastAPI<br>cortex-agent</div>
+      <span class="connector">→</span>
+      <div class="box">LangGraph<br><small style="color:var(--muted)">state machine</small></div>
+      <span class="connector">→</span>
+      <div class="box sandbox">Docker<br>sandbox (R)</div>
+    </div>
+    <div class="row fragment">
+      <span style="color:var(--muted);font-size:0.9em;">↑ claim via label · PR + comments ↓</span>
+    </div>
+    <div class="row fragment">
+      <div class="box">Your repo<br><small style="color:var(--muted)">R code + Quarto HTML</small></div>
+      <span class="connector">·</span>
+      <div class="box store">Postgres<br><small style="color:var(--muted)">checkpointer</small></div>
+      <span class="connector">·</span>
+      <div class="box store">MinIO<br><small style="color:var(--muted)">datasets + artifacts</small></div>
+    </div>
+  </div>
+  <p class="note fragment" style="margin-top:1.5em;color:var(--muted);font-size:0.7em;">
+    Tick triggers claim+run. State survives restarts via Postgres. Sandbox is ephemeral — spawned per stage, torn down after.
+  </p>
+</section>
+
+<!-- 5. Graph -->
+<section>
+  <h2>The LangGraph flow</h2>
+  <div class="pipeline">
+    <div class="node fragment">probe</div><span class="arrow fragment">→</span>
+    <div class="node interrupt fragment">plan ⏸</div><span class="arrow fragment">→</span>
+    <div class="node fragment">quality</div><span class="arrow fragment">→</span>
+    <div class="node fragment">hypothesis</div><span class="arrow fragment">→</span>
+    <div class="node interrupt fragment">model ⏸</div><span class="arrow fragment">→</span>
+    <div class="node fragment">review</div><span class="arrow fragment">→</span>
+    <div class="node terminal fragment">report</div>
+  </div>
+  <div class="grid grid-2" style="margin-top:1em;">
+    <div class="card fragment">
+      <h4>Two human breakpoints</h4>
+      <p>Plan (should Cortex actually do this?) and post-model (metrics worth merging?). Everything else runs unattended.</p>
+    </div>
+    <div class="card fragment">
+      <h4>Postgres checkpointer</h4>
+      <p>Resume after approval is just <code>graph.invoke(None)</code>. State survives redeploys, partial failures, restarts.</p>
+    </div>
+    <div class="card fragment">
+      <h4>Anti-loop guards</h4>
+      <p>Re-entering <code>modeling</code> after an approval is blocked. Review loop capped. No infinite token burn.</p>
+    </div>
+    <div class="card fragment">
+      <h4>Issue context flows through</h4>
+      <p>Triggering issue number carries in state, so <code>node_report</code> can close it at the end.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6. Deterministic reports -->
+<section>
+  <h2>Deterministic reports</h2>
+  <div class="grid grid-2" style="margin-top:0.8em;">
+    <div class="fragment">
+      <h3>LLM writes decisions</h3>
+      <p style="font-size:0.8em;">Classification, narrative, hypothesis selection, metric rationale — the stuff that needs judgement.</p>
+    </div>
+    <div class="fragment">
+      <h3>Repo writes structure</h3>
+      <p style="font-size:0.8em;">Quarto templates pinned at <code>templates/*.qmd</code>. The agent produces <code>summary.json</code>; the template renders it.</p>
+    </div>
+  </div>
+  <div class="takeaway fragment" style="margin-top:1.2em;">
+    <strong>Result:</strong> every run yields the same shape of HTML output. Diff reports across runs. Schema changes are reviewable in Git.
+  </div>
+  <div class="fragment" style="margin-top:1em;display:flex;gap:10px;justify-content:center;">
+    <span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:0.85em;padding:8px 14px;">zero surprise</span>
+    <span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:0.85em;padding:8px 14px;">grep-able</span>
+    <span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:0.85em;padding:8px 14px;">reproducible</span>
+    <span class="badge" style="background:var(--accent-soft);color:var(--accent);font-size:0.85em;padding:8px 14px;">auditable</span>
+  </div>
+</section>
+
+<!-- 7. Concurrency -->
+<section>
+  <h2>Concurrency model</h2>
+  <p style="font-size:0.8em;color:var(--muted);margin-top:0;">Teammate-safe: humans and Cortex share the same backlog without stepping on each other.</p>
+  <div class="grid grid-2" style="margin-top:1em;">
+    <div class="card fragment">
+      <div class="icon">🏷️</div>
+      <h4>Claim via label</h4>
+      <p>Adding <code>cortex:in-progress</code> is the lock. Label absent = claimable. Atomic enough for GitHub's eventual consistency.</p>
+    </div>
+    <div class="card fragment">
+      <div class="icon">⏱️</div>
+      <h4>ISO lease timestamp</h4>
+      <p>Comment on the issue with <code>lease-until: &lt;ts&gt;</code>. Future sweeper reclaims orphaned leases.</p>
+    </div>
+    <div class="card fragment">
+      <div class="icon">🏁</div>
+      <h4>Race detection</h4>
+      <p>Re-read the issue right before writing. If someone claimed in the window, back off with <code>status: skipped</code>.</p>
+    </div>
+    <div class="card fragment">
+      <div class="icon">🧹</div>
+      <h4>Release on exit</h4>
+      <p>End of run: remove label + close issue. If push failed: release only (leave open to retry).</p>
+    </div>
+  </div>
+</section>
+
+<!-- 8. Stack -->
+<section>
+  <h2>Stack choices <small style="font-weight:400;color:var(--muted);">(and why)</small></h2>
+  <table>
+    <tr><th>Component</th><th>Choice</th><th>Why</th></tr>
+    <tr><td><strong>Sandbox</strong></td><td>R + tidyverse / tidymodels / Quarto</td><td>Audience is statisticians. <code>echarts4r</code> beats matplotlib for client decks.</td></tr>
+    <tr><td><strong>LLM routing</strong></td><td>Opus (plan/review), Sonnet (execution)</td><td>Opus too expensive per-stage. Sonnet handles routine codegen well.</td></tr>
+    <tr><td><strong>GitHub</strong></td><td>Direct REST via <code>httpx</code> — no <code>gh</code> CLI</td><td>Deterministic, testable with <code>respx</code>, no shell dependency.</td></tr>
+    <tr><td><strong>State</strong></td><td>Postgres as LangGraph checkpointer</td><td>Survives restarts. Inspectable. Plays nice with async FastAPI.</td></tr>
+    <tr><td><strong>Tests</strong></td><td>pytest + respx + monkeypatch</td><td>45/45 green across GitHub helpers, <code>/ticks</code>, close-issue cycle.</td></tr>
+  </table>
+</section>
+
+<!-- 9. Status -->
+<section>
+  <h2>Where we are</h2>
+  <div style="margin-top:0.6em;">
+    <div class="takeaway fragment"><span class="badge ok">DONE</span> <strong>Sprint 1 — issue-driven loop.</strong> Backlog, tick, claim, close. PRs #18–#24.</div>
+    <div class="takeaway fragment"><span class="badge wip">WIP</span> <strong>Sprint 3 — rich Quarto templates.</strong> Quality report: gt + boxplots + target analysis. PR #25.</div>
+    <div class="takeaway fragment"><span class="badge queued">NEXT</span> <strong>Sprint 2 — robust concurrency.</strong> Lease sweeper, heartbeat, <code>git fetch/rebase</code> before push.</div>
+    <div class="takeaway fragment"><span class="badge queued">NEXT</span> <strong>Sprint 4 — auto-approve on green CI.</strong> Skip human approval when CI and metrics pass.</div>
+    <div class="takeaway fragment"><span class="badge queued">NEXT</span> <strong>Sprint 5 — fail-loud hardening.</strong> Budget caps, token accounting, explicit error surfaces.</div>
+  </div>
+</section>
+
+<!-- 10. Takeaways -->
+<section class="title-slide">
+  <h1 style="font-size:3em;">Takeaways</h1>
+  <div style="max-width:800px;margin:1.5em auto 0;text-align:left;">
+    <div class="takeaway fragment"><strong>Collaborator, not autonomous.</strong> The human always owns the merge.</div>
+    <div class="takeaway fragment"><strong>Structure in the repo, decisions in the LLM.</strong> Templates pinned; prompts change.</div>
+    <div class="takeaway fragment"><strong>Explicit intent &gt; smart defaults.</strong> <code>auto_create_repo</code> is <em>asked for</em>, never inferred.</div>
+    <div class="takeaway fragment"><strong>Fail loud.</strong> Don't ask for approval on trivia.</div>
+  </div>
+  <p class="fragment" style="margin-top:2em;font-family:'JetBrains Mono',monospace;font-size:0.85em;">
+    <a href="https://github.com/wrprates/cortex">github.com/wrprates/cortex</a>
+  </p>
+</section>
+
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/highlight.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    transition: 'fade',
+    transitionSpeed: 'default',
+    controls: true,
+    progress: true,
+    center: true,             // centraliza vertical; elimina espaço morto acima
+    slideNumber: 'c/t',
+    width: 1280,              // 16:9 em vez do default 4:3 (960x700) — menos letterbox
+    height: 720,
+    margin: 0.04,             // 4% de respiro interno automático
+    plugins: [ RevealHighlight ]
+  });
+</script>
+</body>
+</html>
