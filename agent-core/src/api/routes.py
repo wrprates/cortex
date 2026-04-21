@@ -24,6 +24,21 @@ from .schemas import (
 router = APIRouter()
 
 
+# issue_kind → workflow_type. Teammate mode: a label da issue dita o pipeline,
+# não mais o workflow_type do projeto. project.workflow_type vira fallback
+# quando a issue não tem label kind reconhecida.
+#
+# `review` hoje mapeia pra full_ml — a graph não tem um path review-only (review
+# só é alcançado depois de modeling). TODO sprint futuro: workflow dedicado
+# `review_only` que vai direto pra review + report.
+_KIND_TO_WORKFLOW: dict[str, str] = {
+    "quality": "data_quality",
+    "eda": "eda_hypothesis",
+    "modeling": "full_ml",
+    "review": "full_ml",
+}
+
+
 @router.post("/clients", response_model=ClientOut, status_code=201)
 async def create_client(payload: ClientCreate) -> ClientOut:
     # Schema já garantiu que só um dos dois modos chega até aqui.
@@ -218,6 +233,11 @@ async def tick(payload: TickIn, background: BackgroundTasks) -> TickOut:
         )
 
     # 4. Cria run com contexto da issue e dispara thread
+    #    workflow_type vem do kind da issue; fallback pro projeto se kind não
+    #    mapeado (não deve ocorrer — list_claimable_issues filtra por label).
+    workflow_type = _KIND_TO_WORKFLOW.get(
+        kind, project.get("workflow_type", "full_ml")
+    )
     row = await db.insert_run(
         payload.project_id,
         issue_number=target["number"],
@@ -231,7 +251,7 @@ async def tick(payload: TickIn, background: BackgroundTasks) -> TickOut:
             "project_id": payload.project_id,
             "description": project["description"] or "",
             "datasets": payload.datasets,
-            "workflow_type": project.get("workflow_type", "full_ml"),
+            "workflow_type": workflow_type,
             "client_id": str(client_id),
             "github_repo": github_repo,
             "issue_number": target["number"],
