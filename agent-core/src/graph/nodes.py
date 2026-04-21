@@ -165,13 +165,14 @@ def _build_pr_body(state: ProjectState, committed: list[str]) -> str:
     """Body do PR refletindo progresso de cada stage comitada."""
     run_id = state.get("run_id", "?")
     workflow = state.get("workflow_type", "?")
-    plan_issues = state.get("plan_issues") or {}
+    issue_number = state.get("issue_number")
 
     lines = [
         f"**Run:** `{run_id}` · **Workflow:** `{workflow}`",
-        "",
-        "## Progresso",
     ]
+    if issue_number:
+        lines.append(f"**Issue:** #{issue_number}")
+    lines += ["", "## Progresso"]
     stages = ["quality", "hypothesis", "ml"]
     results_by_stage = {
         "quality": state.get("quality_results") or {},
@@ -187,13 +188,6 @@ def _build_pr_body(state: ProjectState, committed: list[str]) -> str:
         if not is_relevant:
             continue
         lines.append(_stage_progress_line(st, results_by_stage[st], st in committed))
-
-    if plan_issues:
-        lines += [
-            "",
-            "## Issues rastreadas",
-            *[f"- #{plan_issues[s]} (`{s}`)" for s in plan_issues],
-        ]
 
     lines += [
         "",
@@ -245,9 +239,6 @@ def _commit_stage_to_repo(
             state.get("plan") or {}, ensure_ascii=False, indent=2
         ).encode()
 
-    # Commit message inclui Closes #N pra issue da stage
-    plan_issues = state.get("plan_issues") or {}
-    issue_num = plan_issues.get(stage)
     msg_lines = [f"[{stage}] Cortex run {run_short}"]
     summary = result.get("summary") or {}
     if stage == "quality" and summary.get("dataset"):
@@ -260,9 +251,6 @@ def _commit_stage_to_repo(
         msg_lines.append(f"EDA: {len(summary['hypotheses'])} hipóteses testadas")
     elif stage == "ml" and result.get("metrics"):
         msg_lines.append(f"Modeling: {len(result['metrics'])} métricas registradas")
-    if issue_num:
-        msg_lines.append("")
-        msg_lines.append(f"Closes #{issue_num}")
     commit_message = "\n".join(msg_lines)
 
     push_info = github_manager.push_to_branch(
@@ -272,13 +260,6 @@ def _commit_stage_to_repo(
         logger.error("commit_stage: push falhou para %s — %s",
                      stage, push_info.get("error"))
         return None
-
-    # Fecha issue explicitamente (belt-and-suspenders; "Closes" só age no merge)
-    if issue_num:
-        try:
-            github_pm.close_issue(repo_url, issue_num, reason="completed")
-        except Exception as e:
-            logger.warning("close_issue %s falhou: %s", issue_num, e)
 
     # Atualiza lista de stages comitadas antes de compor o PR body
     stages_committed.append(stage)
@@ -305,8 +286,7 @@ def _commit_stage_to_repo(
     except Exception as e:
         logger.warning("PR draft/update falhou: %s", e)
 
-    logger.info("commit_stage: %s comitado em %s (issue #%s fechada)",
-                stage, branch_name, issue_num)
+    logger.info("commit_stage: %s comitado em %s", stage, branch_name)
     return updates
 
 
@@ -449,108 +429,68 @@ def node_probe(state: ProjectState) -> dict:
     return {"dataset_profile": profile, "current_phase": "probing"}
 
 
-_STAGES_BY_WORKFLOW = {
-    "data_quality": ["quality"],
-    "eda_hypothesis": ["quality", "hypothesis"],
-    "full_ml": ["quality", "hypothesis", "ml"],
-}
+def _post_plan_comment(state: ProjectState, plan: dict) -> None:
+    """
+    Teammate mode: posta o plano aprovado como comentário na issue original do tick.
+    Sem sub-issues, sem milestone — 1 issue = 1 PR.
+    Falhas são logadas; não quebram o run.
+    """
+    from ..storage import github_pm
 
+    repo_url = state.get("github_repo")
+    issue_number = state.get("issue_number")
+    if not repo_url or not issue_number:
+        logger.info("post_plan_comment: sem repo ou issue_number; pulando")
+        return
 
-def _planned_stages(workflow_type: str) -> list[str]:
-    return _STAGES_BY_WORKFLOW.get(workflow_type, ["quality", "hypothesis", "ml"])
-
-
-def _issue_body_for_stage(stage: str, plan: dict, workflow_type: str) -> str:
-    """Corpo da issue de uma stage — mostra objetivos e contexto do plano."""
-    phases = plan.get("phases") or []
-    relevant_names = {
-        "quality": ("quality", "qualidade"),
-        "hypothesis": ("hypothesis", "hipótese", "eda"),
-        "ml": ("model", "ml", "machine learning"),
-    }.get(stage, (stage,))
-    matches = [
-        p for p in phases
-        if any(k in (p.get("name", "").lower()) for k in relevant_names)
-    ]
+    run_id = state.get("run_id", "?")
+    kind = state.get("issue_kind", "?")
     lines = [
-        f"## Etapa: **{stage}**",
+        "## 🧠 Plano do Cortex",
         "",
-        f"_Workflow do projeto: `{workflow_type}`_",
+        f"_Run:_ `{run_id}`  ·  _Kind:_ `{kind}`",
         "",
-        "### Objetivos desta etapa (derivados do plano)",
     ]
-    if matches:
-        for p in matches:
+    if plan.get("summary"):
+        lines += ["### Resumo", str(plan["summary"]), ""]
+
+    phases = plan.get("phases") or []
+    if phases:
+        lines.append("### Fases planejadas")
+        for p in phases:
             nm = p.get("name", "?")
             obj = p.get("objective", "")
             rat = p.get("rationale", "")
             lines.append(f"- **{nm}** — {obj}")
             if rat:
                 lines.append(f"  _{rat}_")
-    else:
-        lines.append("_Nenhuma fase do plano casou com esta etapa; "
-                     "verifique viabilidade._")
-    lines += [
-        "",
-        "### Entregáveis esperados no branch do run",
-        f"- `R/0N_{stage}.R` — código fonte",
-        f"- `outputs/{stage}.html` — relatório Quarto interativo",
-        f"- `outputs/{stage}_summary.json` — sumário estruturado",
-        "",
-        "_Issue gerada automaticamente pelo Cortex após aprovação do plano. "
-        "Será fechada quando o PR do run for mergeado._",
-    ]
-    return "\n".join(lines)
+        lines.append("")
 
+    risks = plan.get("risks")
+    if risks:
+        lines.append("### Riscos / atenção")
+        if isinstance(risks, list):
+            for r in risks:
+                lines.append(f"- {r}")
+        else:
+            lines.append(str(risks))
+        lines.append("")
 
-def _create_plan_issues(state: ProjectState, plan: dict) -> tuple[dict, int | None]:
-    """
-    Cria milestone (1 por projeto) e issues (1 por stage). Idempotente no milestone.
+    feas = plan.get("feasibility")
+    if feas:
+        lines += ["### Viabilidade", str(feas), ""]
 
-    Retorna (plan_issues, milestone_number). plan_issues = {stage: issue_number}.
-    Falhas são logadas mas NÃO levantam — gestão no GitHub é valor agregado,
-    não deve quebrar o run.
-    """
-    from ..storage import github_pm
-
-    repo_url = state.get("github_repo")
-    if not repo_url:
-        return {}, None
-
-    workflow_type = state.get("workflow_type", "full_ml")
-    stages = _planned_stages(workflow_type)
-    project_id = state.get("project_id", "?")
-    run_id = state.get("run_id", "?")
-    ms_title = f"Projeto {project_id[:8] if isinstance(project_id, str) else '?'}"
-    ms_desc = (
-        f"Milestone do projeto `{project_id}`. Reúne as etapas de ciência de "
-        "dados executadas pelo Cortex."
+    lines.append(
+        "_Comentário automático do Cortex após nó `planning`. "
+        "PR será aberto apenas ao fim do run._"
     )
 
     try:
-        milestone_number = github_pm.ensure_milestone(repo_url, ms_title, ms_desc)
+        ok = github_pm.comment_issue(repo_url, int(issue_number), "\n".join(lines))
+        if not ok:
+            logger.warning("post_plan_comment falhou em #%s", issue_number)
     except Exception as e:
-        logger.exception("ensure_milestone falhou: %s", e)
-        milestone_number = None
-
-    plan_issues: dict[str, int] = {}
-    for stage in stages:
-        title = f"[{stage}] run {run_id[:8] if isinstance(run_id, str) else '?'}"
-        body = _issue_body_for_stage(stage, plan, workflow_type)
-        try:
-            num = github_pm.create_issue(
-                repo_url,
-                title=title,
-                body=body,
-                milestone=milestone_number,
-                labels=[f"stage:{stage}", "cortex"],
-            )
-            if num is not None:
-                plan_issues[stage] = num
-        except Exception as e:
-            logger.exception("create_issue(%s) falhou: %s", stage, e)
-
-    return plan_issues, milestone_number
+        logger.exception("post_plan_comment exception: %s", e)
 
 
 def node_plan(state: ProjectState) -> dict:
@@ -564,11 +504,9 @@ def node_plan(state: ProjectState) -> dict:
             "dataset_profile": state.get("dataset_profile"),
         },
     )
-    plan_issues, milestone_number = _create_plan_issues(state, plan)
+    _post_plan_comment(state, plan)
     return {
         "plan": plan,
-        "plan_issues": plan_issues,
-        "milestone_number": milestone_number,
         "current_phase": "planning",
         "status": "waiting_human",
     }
