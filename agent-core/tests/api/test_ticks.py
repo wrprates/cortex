@@ -291,3 +291,66 @@ class TestTickErrors:
     def test_422_when_project_id_is_not_uuid(self, app_client, mock_tick_deps):
         r = app_client.post("/v1/ticks", json={"project_id": "not-a-uuid"})
         assert r.status_code == 422
+
+
+class TestKindDrivesWorkflow:
+    """
+    Sprint Lâmina 2/4 (#29): issue_kind vira ditador do workflow_type.
+    O valor salvo em `project.workflow_type` é ignorado quando a issue tem
+    uma label kind reconhecida — só serve como fallback defensivo.
+    """
+
+    def _base_state(self, deps, kind: str, project_workflow: str = "full_ml"):
+        s = deps["state"]
+        s["project"] = _project(workflow_type=project_workflow)
+        s["client"] = _client_row()
+        s["issues"] = [
+            {
+                "number": 99,
+                "title": f"issue {kind}",
+                "labels": [{"name": f"cortex:{kind}"}],
+                "html_url": "u",
+                "updated_at": "2026-04-21T10:00:00Z",
+            }
+        ]
+        s["claim_ok"] = True
+
+    def test_quality_kind_maps_to_data_quality(self, app_client, mock_tick_deps):
+        self._base_state(mock_tick_deps, "quality", project_workflow="full_ml")
+        r = app_client.post("/v1/ticks", json={"project_id": str(PROJECT_ID)})
+        assert r.status_code == 200
+        kwargs = mock_tick_deps["spawned"][0]["kwargs"]
+        assert kwargs["workflow_type"] == "data_quality"
+
+    def test_eda_kind_maps_to_eda_hypothesis(self, app_client, mock_tick_deps):
+        self._base_state(mock_tick_deps, "eda", project_workflow="data_quality")
+        r = app_client.post("/v1/ticks", json={"project_id": str(PROJECT_ID)})
+        assert r.status_code == 200
+        kwargs = mock_tick_deps["spawned"][0]["kwargs"]
+        assert kwargs["workflow_type"] == "eda_hypothesis"
+
+    def test_modeling_kind_maps_to_full_ml(self, app_client, mock_tick_deps):
+        self._base_state(mock_tick_deps, "modeling", project_workflow="data_quality")
+        r = app_client.post("/v1/ticks", json={"project_id": str(PROJECT_ID)})
+        assert r.status_code == 200
+        kwargs = mock_tick_deps["spawned"][0]["kwargs"]
+        assert kwargs["workflow_type"] == "full_ml"
+
+    def test_review_kind_maps_to_full_ml_for_now(self, app_client, mock_tick_deps):
+        # TODO: sprint futuro introduzir workflow dedicado review_only.
+        self._base_state(mock_tick_deps, "review", project_workflow="data_quality")
+        r = app_client.post("/v1/ticks", json={"project_id": str(PROJECT_ID)})
+        assert r.status_code == 200
+        kwargs = mock_tick_deps["spawned"][0]["kwargs"]
+        assert kwargs["workflow_type"] == "full_ml"
+
+    def test_kind_overrides_project_workflow(self, app_client, mock_tick_deps):
+        """
+        project.workflow_type='full_ml' mas issue é quality → roda só data_quality.
+        É a garantia central do sprint: kind dita, projeto é fallback.
+        """
+        self._base_state(mock_tick_deps, "quality", project_workflow="full_ml")
+        r = app_client.post("/v1/ticks", json={"project_id": str(PROJECT_ID)})
+        assert r.status_code == 200
+        kwargs = mock_tick_deps["spawned"][0]["kwargs"]
+        assert kwargs["workflow_type"] == "data_quality"
