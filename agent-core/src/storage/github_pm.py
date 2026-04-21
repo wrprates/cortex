@@ -138,22 +138,26 @@ def create_pr(
         return None
 
 
-def comment_pr(repo_url: str, pr_number: int, body: str) -> bool:
+def comment_issue(repo_url: str, issue_number: int, body: str) -> bool:
     """
-    Posta um comentário na conversa do PR (equivale a comentar na issue #N,
-    já que PRs compartilham namespace de issues).
+    Posta um comentário numa issue ou PR (GitHub compartilha namespace).
     """
     repo = _repo_path(repo_url)
     with _client() as http:
         r = http.post(
-            f"{_BASE}/repos/{repo}/issues/{pr_number}/comments", json={"body": body}
+            f"{_BASE}/repos/{repo}/issues/{issue_number}/comments", json={"body": body}
         )
         if r.status_code == 201:
             return True
         logger.error(
-            "falha comentando PR #%s: %s %s", pr_number, r.status_code, r.text[:300]
+            "falha comentando #%s: %s %s", issue_number, r.status_code, r.text[:300]
         )
         return False
+
+
+def comment_pr(repo_url: str, pr_number: int, body: str) -> bool:
+    """Alias de `comment_issue` pra callers legacy focados em PR."""
+    return comment_issue(repo_url, pr_number, body)
 
 
 def close_issue(
