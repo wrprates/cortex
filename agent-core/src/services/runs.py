@@ -68,12 +68,35 @@ def start_run(
         return _snapshot(state)
     except TokenBudgetExceeded as e:
         logger.error("run %s abortado: %s", run_id, e)
+        _release_claim_on_failure(github_repo, issue_number, run_id)
         return {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
     except Exception as e:
         logger.exception("run %s failed: %s", run_id, e)
+        _release_claim_on_failure(github_repo, issue_number, run_id)
         return {"status": "failed", "error": str(e)}
     finally:
         structlog.contextvars.clear_contextvars()
+
+
+def _release_claim_on_failure(
+    github_repo: str | None, issue_number: int | None, run_id: UUID
+) -> None:
+    """
+    Sprint-lamina 4/4: se o run falha antes de node_report, libera o claim
+    (`cortex:in-progress`) pra a issue voltar pro backlog. Não fecha a issue,
+    só solta o lock — humano ou próximo tick retomam.
+    """
+    if not github_repo or issue_number is None:
+        return
+    try:
+        from ..storage import github_pm
+        github_pm.release_claim(github_repo, int(issue_number))
+        logger.warning(
+            "release_claim em run falho: run_id=%s issue=#%s",
+            run_id, issue_number,
+        )
+    except Exception as e:
+        logger.warning("release_claim após falha também falhou: %s", e)
 
 
 def resume_run(run_id: UUID, decision: str, comments: str | None) -> dict:

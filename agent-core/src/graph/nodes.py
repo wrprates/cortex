@@ -191,7 +191,8 @@ def _build_pr_body(state: ProjectState, committed: list[str]) -> str:
 
     lines += [
         "",
-        "_PR atualizado incrementalmente a cada fase concluída._",
+        "_PR aberto ao fim do run com todas as fases completas. "
+        "Merge = run aprovado; fechar sem merge = rejeitado (issue volta pro backlog)._",
     ]
     return "\n".join(lines)
 
@@ -200,16 +201,17 @@ def _commit_stage_to_repo(
     state: ProjectState, stage: str, result: dict
 ) -> dict | None:
     """
-    Commita artefatos da stage no branch `run/<short>`, fecha a issue da stage
-    e garante que existe um draft PR rastreando o run.
+    Commita artefatos da stage no branch `run/<short>`. Sprint-lamina 4/4:
+    NÃO abre nem atualiza PR — isso é responsabilidade exclusiva de node_report
+    ao fim do run (princípio "PR = entrega completa, não progresso parcial").
 
-    Idempotente: se branch existe, adiciona commit em cima. Se PR existe,
-    apenas atualiza o body. Falhas de GitHub são logadas mas não levantam
-    (garantia de que problemas de rede não quebram o run).
+    Idempotente: se o branch existir, adiciona commit em cima. Falhas de push
+    são logadas e retornam None.
 
-    Retorna dict com updates pro state: {run_pr?, stages_committed}.
+    Retorna dict com `stages_committed` atualizado, ou None se pushou falhou
+    ou a stage não teve sucesso.
     """
-    from ..storage import github_manager, github_pm
+    from ..storage import github_manager
     import json as _json
 
     repo_url = state.get("github_repo")
@@ -261,33 +263,9 @@ def _commit_stage_to_repo(
                      stage, push_info.get("error"))
         return None
 
-    # Atualiza lista de stages comitadas antes de compor o PR body
     stages_committed.append(stage)
-
-    # Abre ou atualiza draft PR
-    run_pr = state.get("run_pr")
-    updates: dict = {"stages_committed": stages_committed}
-    try:
-        if not run_pr:
-            pr = github_pm.create_pr(
-                repo_url,
-                head=branch_name,
-                base="main",
-                title=f"Cortex run {run_short} ({state.get('workflow_type','?')})",
-                body=_build_pr_body(state, stages_committed),
-                draft=True,
-            )
-            if pr:
-                updates["run_pr"] = pr
-        else:
-            github_pm.update_pr_body(
-                repo_url, run_pr["number"], _build_pr_body(state, stages_committed)
-            )
-    except Exception as e:
-        logger.warning("PR draft/update falhou: %s", e)
-
     logger.info("commit_stage: %s comitado em %s", stage, branch_name)
-    return updates
+    return {"stages_committed": stages_committed}
 
 
 def _fmt_finding(f) -> str:
@@ -748,12 +726,13 @@ def _collect_stage_artifacts(
 
 def node_report(state: ProjectState) -> dict:
     """
-    Fecha o ciclo:
+    Fecha o ciclo (sprint-lamina 4/4):
     1. Compila relatório final via orchestrator.
-    2. Commita README + final_report.json no branch do run (os artefatos
-       das stages já foram comitados incrementalmente por node_quality/
-       hypothesis/modeling).
-    3. Marca o draft PR existente como ready-for-review.
+    2. Commita README + final_report.json no branch do run.
+    3. **Abre UM PR ready-for-review** com body completo (progresso + resumo
+       executivo + findings + recomendações). Se o PR abrir com sucesso,
+       fecha a issue-driver. Se falhar (push ou open), libera só o claim e
+       deixa a issue aberta pra re-tick.
     """
     import json as _json
     from ..storage import github_manager, github_pm
@@ -775,7 +754,8 @@ def node_report(state: ProjectState) -> dict:
     )
 
     push_info: dict = {"status": "skipped"}
-    pr_info: dict | None = state.get("run_pr")
+    pr_info: dict | None = None
+    finalize_ok = False
     repo_url = state.get("github_repo")
     if repo_url:
         try:
@@ -783,8 +763,6 @@ def node_report(state: ProjectState) -> dict:
             run_short = run_id[:8] if isinstance(run_id, str) else "unknown"
             branch_name = f"run/{run_short}"
 
-            # Último commit: só README final + final_report.json. Artefatos
-            # das stages já foram comitados por _commit_stage_to_repo.
             files: dict[str, bytes] = {
                 "README.md": _build_run_readme(state, report).encode(),
                 "final_report.json": _json.dumps(
@@ -797,48 +775,56 @@ def node_report(state: ProjectState) -> dict:
             )
             push_info["status"] = "pushed" if push_info.get("ok") else "failed"
 
-            # Marca PR como ready-for-review (sai do draft)
-            if pr_info and push_info.get("ok"):
-                try:
-                    github_pm.mark_pr_ready(repo_url, pr_info["number"])
-                    github_pm.update_pr_body(
-                        repo_url, pr_info["number"],
-                        _build_pr_body(state, state.get("stages_committed") or [])
-                        + "\n\n---\n\n## Resumo Executivo\n\n"
-                        + (report.get("executive_summary") or "_(vazio)_"),
+            if push_info.get("ok"):
+                body = _build_pr_body(
+                    state, state.get("stages_committed") or []
+                )
+                body += (
+                    "\n\n---\n\n## Resumo Executivo\n\n"
+                    + (report.get("executive_summary") or "_(vazio)_")
+                )
+                findings = report.get("key_findings") or []
+                recs = report.get("recommendations") or []
+                if findings:
+                    body += "\n\n## 🔑 Principais Achados\n"
+                    for f in findings[:10]:
+                        body += f"- {_fmt_finding(f)}\n"
+                if recs:
+                    body += "\n\n## 🎯 Recomendações\n"
+                    for r in recs[:10]:
+                        body += f"- {_fmt_recommendation(r)}\n"
+
+                title = f"Cortex run {run_short} ({state.get('workflow_type','?')})"
+                pr_info = github_pm.create_pr(
+                    repo_url,
+                    head=branch_name,
+                    base="main",
+                    title=title,
+                    body=body,
+                    draft=False,
+                )
+                if pr_info:
+                    finalize_ok = True
+                else:
+                    logger.error(
+                        "node_report: push ok mas create_pr falhou — "
+                        "issue ficará aberta pra re-tick."
                     )
-                    # Comentário final com findings + recomendações
-                    findings = report.get("key_findings") or []
-                    recs = report.get("recommendations") or []
-                    if findings or recs:
-                        parts = ["## 🔑 Principais Achados"]
-                        for f in findings[:10]:
-                            parts.append(f"- {_fmt_finding(f)}")
-                        if recs:
-                            parts += ["", "## 🎯 Recomendações"]
-                            for r in recs[:10]:
-                                parts.append(f"- {_fmt_recommendation(r)}")
-                        github_pm.comment_pr(
-                            repo_url, pr_info["number"], "\n".join(parts)
-                        )
-                except Exception as e:
-                    logger.warning("mark_pr_ready/update falhou: %s", e)
 
         except Exception as e:
             logger.exception("github report-commit error: %s", e)
             push_info = {"status": f"error:{type(e).__name__}", "error": str(e)}
 
-    # Sprint 1/B4: fecha o ciclo da issue-driver (a que o humano abriu e o
-    # Cortex pegou via /v1/ticks). Chamar mesmo com push falhando libera o
-    # claim pra a issue não ficar órfã com `cortex:in-progress` travado.
+    # Libera claim sempre. Fecha issue apenas se TUDO deu certo (push + PR).
     if repo_url:
-        _close_issue_driven_cycle(state, repo_url, push_ok=push_info.get("ok") is True)
+        _close_issue_driven_cycle(state, repo_url, push_ok=finalize_ok)
 
     report["_github_push"] = push_info
     if pr_info is not None:
         report["_github_pr"] = pr_info
     return {
         "final_report": report,
+        "run_pr": pr_info,
         "current_phase": "done",
         "status": "completed",
     }
