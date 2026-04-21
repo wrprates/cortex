@@ -36,7 +36,7 @@ def start_run(
     issue_kind: str | None = None,
     issue_title: str | None = None,
 ) -> dict:
-    """Dispara o grafo até a primeira interrupção (human approval do plano)."""
+    """Dispara o grafo e roda até terminal (teammate mode, sem breakpoints)."""
     logger.warning("start_run ENTRY run_id=%s project_id=%s workflow=%s", run_id, project_id, workflow_type)
     graph = _graph()
     initial: ProjectState = {
@@ -77,40 +77,18 @@ def start_run(
 
 
 def resume_run(run_id: UUID, decision: str, comments: str | None) -> dict:
-    """Retoma o grafo após decisão humana (approved|rejected)."""
-    logger.warning("resume_run ENTRY run_id=%s decision=%s", run_id, decision)
-    graph = _graph()
-    cfg = _config(run_id)
+    """
+    DEPRECATED (sprint-lamina 3/4, issue #30). Grafo não tem mais breakpoints;
+    `start_run` roda até terminal. Review humana acontece no PR do GitHub.
 
-    snapshot = graph.get_state(cfg)
-    if snapshot is None:
-        logger.warning("resume_run %s: snapshot not found", run_id)
-        return {"status": "not_found"}
-
-    human_log = list(snapshot.values.get("human_decisions", []))
-    human_log.append({"decision": decision, "comments": comments, "phase": snapshot.values.get("current_phase")})
-    graph.update_state(cfg, {"human_decisions": human_log})
-
-    if decision == "rejected":
-        # Marca como abortado; não segue.
-        graph.update_state(cfg, {"status": "failed"})
-        return {"status": "failed", "reason": "rejected_by_human"}
-
-    settings = get_settings()
-    logger.warning("resume_run BEFORE_INVOKE run_id=%s phase=%s", run_id, snapshot.values.get("current_phase"))
-    try:
-        with run_budget(settings.max_run_tokens):
-            state = graph.invoke(None, config=cfg)
-        logger.warning("resume_run AFTER_INVOKE run_id=%s phase=%s", run_id, state.get("current_phase"))
-        return _snapshot(state)
-    except TokenBudgetExceeded as e:
-        logger.error("resume_run %s abortado: %s", run_id, e)
-        return {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
-    except Exception as e:
-        # Sem esse except, qualquer exceção morre silenciosa no thread daemon
-        # (routes.py cria o thread com daemon=True).
-        logger.exception("resume_run %s failed: %s", run_id, e)
-        return {"status": "failed", "error": str(e)}
+    Função mantida como no-op por 1 sprint pra não quebrar callers legacy;
+    será removida no próximo sprint junto do endpoint POST /v1/decisions.
+    """
+    logger.warning(
+        "DEPRECATED resume_run chamado run_id=%s decision=%s — no-op.",
+        run_id, decision,
+    )
+    return {"status": "deprecated", "reason": "graph runs to terminal, no resume needed"}
 
 
 def get_run_state(run_id: UUID) -> dict | None:

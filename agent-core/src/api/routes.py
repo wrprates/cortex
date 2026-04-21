@@ -290,19 +290,25 @@ async def get_run_state(run_id: UUID) -> dict:
 async def record_decision(
     payload: HumanDecisionIn, background: BackgroundTasks
 ) -> HumanDecisionOut:
+    """
+    DEPRECATED (sprint-lamina 3/4, issue #30). O grafo não tem mais breakpoints;
+    review humana acontece via comentário/merge no PR do GitHub, não por este
+    endpoint. Mantido por 1 sprint pra callers legacy não quebrarem — ele grava
+    a decisão em DB (audit) e loga warn, mas **não retoma run nenhum**.
+
+    Será removido no próximo sprint.
+    """
     if payload.decision not in {"approved", "rejected"}:
         raise HTTPException(status_code=400, detail="decision must be approved|rejected")
+
+    import logging
+    logging.getLogger(__name__).warning(
+        "DEPRECATED: POST /v1/decisions chamado (run=%s decision=%s) — "
+        "grafo não pausa mais; decisão ignorada, só gravada em audit.",
+        payload.run_id, payload.decision,
+    )
 
     row = await db.insert_human_decision(
         payload.run_id, payload.task_id, payload.decision, payload.comments
     )
-    threading.Thread(
-        target=runs_service.resume_run,
-        kwargs={
-            "run_id": payload.run_id,
-            "decision": payload.decision,
-            "comments": payload.comments,
-        },
-        daemon=True,
-    ).start()
     return HumanDecisionOut(**row)
