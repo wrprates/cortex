@@ -508,7 +508,7 @@ def node_plan(state: ProjectState) -> dict:
     return {
         "plan": plan,
         "current_phase": "planning",
-        "status": "waiting_human",
+        "status": "active",
     }
 
 
@@ -648,17 +648,6 @@ def node_decide_next(state: ProjectState) -> dict:
 
 
 def node_modeling(state: ProjectState) -> dict:
-    # Guard anti-loop: se já existe aprovação humana para phase=modeling, o
-    # modelo já foi treinado e aprovado num invoke anterior — não refaz o
-    # trabalho pesado nem re-seta waiting_human, só deixa o grafo avançar.
-    for _d in state.get("human_decisions") or []:
-        if _d.get("phase") == "modeling" and _d.get("decision") == "approved":
-            logger.warning(
-                "node_modeling SKIP (já aprovado) run_id=%s",
-                state.get("run_id", "unknown"),
-            )
-            return {"current_phase": "modeling"}
-
     inputs = _collect_stage_inputs(state)
     context = {
         "plan": state.get("plan"),
@@ -681,7 +670,7 @@ def node_modeling(state: ProjectState) -> dict:
     updates = {
         "model_results": result,
         "current_phase": "modeling",
-        "status": "waiting_human",
+        "status": "active",
         "stage_artifacts": _merge_stage_artifacts(
             state.get("stage_artifacts"), "ml", published
         ),

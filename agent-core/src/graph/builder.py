@@ -9,7 +9,7 @@ from .state import ProjectState
 
 def build_graph(checkpointer=None, *, use_postgres: bool = True):
     """
-    Constrói o grafo LangGraph com human-in-the-loop e suporte a workflows parciais.
+    Constrói o grafo LangGraph sem breakpoints — teammate mode (sprint-lamina 3/4).
 
     Workflows:
     - data_quality:   probe → planning → quality → report
@@ -17,7 +17,8 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
     - full_ml:        probe → planning → quality → hypothesis → decide_next
                                                               → modeling → review → report
 
-    interrupt_after força o grafo a pausar; o run é retomado via API após a decisão humana.
+    Review humana acontece no PR do GitHub aberto pelo node_report, não mais
+    num endpoint POST /v1/decisions. Run flui do claim até terminal.
     """
     g = StateGraph(ProjectState)
 
@@ -62,7 +63,4 @@ def build_graph(checkpointer=None, *, use_postgres: bool = True):
         else:
             checkpointer = MemorySaver()
 
-    return g.compile(
-        checkpointer=checkpointer,
-        interrupt_after=["planning", "modeling"],
-    )
+    return g.compile(checkpointer=checkpointer)
