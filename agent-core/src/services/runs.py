@@ -68,14 +68,45 @@ def start_run(
         return _snapshot(state)
     except TokenBudgetExceeded as e:
         logger.error("run %s abortado: %s", run_id, e)
+        pr_info = _open_partial_pr_if_any(
+            run_id, reason=f"token budget exceeded: {e}"
+        )
         _release_claim_on_failure(github_repo, issue_number, run_id)
-        return {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
+        out = {"status": "aborted", "reason": "token_budget_exceeded", "error": str(e)}
+        if pr_info:
+            out["partial_pr"] = pr_info
+        return out
     except Exception as e:
         logger.exception("run %s failed: %s", run_id, e)
+        pr_info = _open_partial_pr_if_any(
+            run_id, reason=f"{type(e).__name__}: {e}"
+        )
         _release_claim_on_failure(github_repo, issue_number, run_id)
-        return {"status": "failed", "error": str(e)}
+        out = {"status": "failed", "error": str(e)}
+        if pr_info:
+            out["partial_pr"] = pr_info
+        return out
     finally:
         structlog.contextvars.clear_contextvars()
+
+
+def _open_partial_pr_if_any(run_id: UUID, *, reason: str) -> dict | None:
+    """
+    Se o checkpointer tem estado persistido com `stages_committed` não vazio,
+    abre um DRAFT PR parcial (título `[INCOMPLETO: ...]`). Retorna pr_info
+    dict ou None. Best-effort: qualquer falha vira warning, não propaga.
+    """
+    try:
+        from ..graph.nodes import open_partial_pr
+        graph = _graph()
+        snap = graph.get_state(_config(run_id))
+        state = snap.values if snap else {}
+        if not state.get("stages_committed"):
+            return None
+        return open_partial_pr(state, reason=reason)
+    except Exception as e:
+        logger.warning("partial PR na falha também falhou: %s", e)
+        return None
 
 
 def _release_claim_on_failure(
