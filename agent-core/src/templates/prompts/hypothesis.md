@@ -2,6 +2,17 @@
 
 EDA aqui **não é passeio descritivo**. Cada bloco de análise precisa estar ancorado numa hipótese formulável, testável, e com consequência de negócio.
 
+## Formulação das hipóteses (liberdade caso-a-caso)
+
+Você **propõe as hipóteses** com base no contexto do projeto e no que a fase de qualidade revelou. Não há template: olhe as colunas, os tipos, a pergunta de negócio original, o que chamou atenção no relatório de qualidade (outliers, segmentos desbalanceados, gaps temporais) e **formule 4-8 hipóteses que movam o negócio**.
+
+Priorize hipóteses que:
+- **Conectam variável preditora com resultado de negócio** (receita, conversão, churn, ticket médio, LTV, satisfação).
+- **Comparam segmentos** que o negócio consegue acionar (canal de aquisição, região, faixa etária, tipo de produto).
+- **Expõem riscos ou oportunidades operacionais** (ex: tempo de resposta × abandono, sazonalidade × estoque).
+
+Evite hipóteses triviais ("será que preço alto vende menos?") ou sem alavanca ("será que existe correlação entre X e Y?" sem dizer pra quê).
+
 ## Estrutura obrigatória por hipótese
 
 Cada hipótese segue este ciclo — documente tudo no `report.html`:
@@ -19,6 +30,22 @@ Cada hipótese segue este ciclo — documente tudo no `report.html`:
    - **Cramér's V**: use `sqrt(chisq / (n * (min(nrow, ncol) - 1)))`. Deve estar entre 0 e 1.
 5. **Correção multiteste**: se mais de uma hipótese no mesmo grupo, aplicar Bonferroni ou Benjamini-Hochberg e justificar a escolha.
 6. **Interpretação de negócio**: o que isso muda na operação/estratégia do cliente. Três camadas (observação → significado → ação). **REGRA CRÍTICA**: se `p_adj > α` (tipicamente 0.05), a conclusão DEVE ser "Sem evidência de associação/diferença" — nunca afirme associação quando o teste não rejeita H0. `business_implication` e `recommended_action` devem refletir a incerteza ("exploratório", "não confirmado", "necessita mais dados"), nunca apresentar como achado confirmado.
+
+## Visualização obrigatória por tipo de hipótese
+
+Toda hipótese precisa de **pelo menos um gráfico interativo** (`echarts4r`) que deixe o achado visível mesmo sem ler o texto. Use o gráfico certo pro tipo de teste:
+
+- **Comparação de médias** (t-test, Wilcoxon): **boxplot** lado-a-lado por grupo (`e_boxplot`) ou density plot (`e_density`) sobrepostos. Mostre a diferença, não só o p-valor.
+- **Comparação de proporções** (prop.test, chi-quadrado 2×2): **barras empilhadas com %** (`e_bar` + `stack`) ou mosaic. Anote N absoluto em cada barra.
+- **Associação de categóricas** (chi-quadrado N×M): **heatmap** de resíduos padronizados ou mosaic plot — destaque as células com maior contribuição ao chi².
+- **Correlação** (cor.test): **scatter** com linha de tendência (`e_scatter` + `e_lm`) e coeficiente no subtítulo. Se n > 5000, use `e_effect_scatter` ou amostra + faixa de densidade pra não virar mancha.
+- **ANOVA/Kruskal**: boxplot por grupo + linha da média geral de referência.
+- **Séries temporais**: `e_line` com marcadores de evento/breakpoint quando relevante.
+
+Cada gráfico precisa de:
+- **Título que conta a história** (ver `report_narrative.md`) — nunca "Distribuição de X".
+- Legenda e eixos em pt-BR.
+- N reportado em algum lugar (subtítulo, anotação, tooltip).
 
 ## Verificação de pressupostos
 
