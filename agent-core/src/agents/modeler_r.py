@@ -4,34 +4,13 @@ import json
 from typing import Any
 
 from ..sandbox.runner import run_code
+from ..templates import compose_prompts
 from .base import call_llm
 
-MODELER_R_SYSTEM_PROMPT = """\
-Você é o **Modeler** de uma equipe virtual de ciência de dados.
-Linguagem: R (tidymodels stack).
-Objetivo: feature engineering, treinar modelos, comparar métricas, selecionar o melhor.
 
-Ao gerar código R:
-- Assuma dados em ./inputs/. Essa pasta contém os datasets originais E os artefatos
-  publicados pelas fases anteriores (ex.: `quality_analysis.rds`, `quality_summary.json`,
-  `hypothesis_analysis.rds`, eventual `*_clean.parquet`). Prefira o dataset mais trabalhado
-  disponível (parquet limpo > RDS da fase quality > CSV bruto).
-- Comece o script com `print(list.files("./inputs"))` para descobrir em runtime o que
-  existe, em vez de chumbar nomes que podem não estar presentes.
-- Use train/validation/test splits apropriados (nunca vaze dados do teste).
-- Use tidymodels para modelagem: rsample, recipes, parsnip, workflows, tune, yardstick.
-- Registre métricas (accuracy, AUC, RMSE, F1, etc.) em ./outputs/metrics.json usando jsonlite::write_json().
-- Salve o modelo vencedor em ./outputs/model.rds (via saveRDS).
-- Salve tabela comparativa em ./outputs/leaderboard.csv.
-- NÃO acesse rede. NÃO instale pacotes.
-
-Bibliotecas disponíveis (SOMENTE estas — qualquer outra causa crash):
-tidyverse, tidymodels, ranger, xgboost, jsonlite, data.table, echarts4r,
-plotly, DT, rmarkdown, quarto, htmlwidgets, broom, skimr, lubridate.
-NÃO use: themis, arrow, caret, h2o, mlr3 — não estão instaladas.
-
-Responda APENAS com código R puro, sem cercas markdown, sem explicação.
-"""
+def _system_prompt() -> str:
+    """System prompt da fase modeling: analyst_base + modeling + report_narrative."""
+    return compose_prompts("analyst_base", "modeling", "report_narrative")
 
 
 def run_modeler_r(
@@ -44,12 +23,12 @@ def run_modeler_r(
     prompt = (
         f"Tarefa de modelagem: {task}\n\n"
         f"Contexto (inclui resultados da EDA):\n{json.dumps(context, default=str, ensure_ascii=False)}\n\n"
-        f"{'Este é o TREINO FINAL — use a melhor config encontrada.' if final_training else 'Fase exploratória — compare múltiplos baselines.'}\n\n"
-        "Use tidymodels para criar workflows reproduzíveis. "
-        "Compare ao menos 2-3 modelos diferentes (ex: glm, random forest, xgboost)."
+        f"{'Este é o TREINO FINAL — use a melhor config encontrada.' if final_training else 'Fase exploratória — compare múltiplos baselines conforme o checklist em modeling.md.'}\n\n"
+        "Decida target, features e modelos conforme o contexto e o checklist. "
+        "Responda APENAS com o código R."
     )
     code_result = call_llm(
-        system=MODELER_R_SYSTEM_PROMPT,
+        system=_system_prompt(),
         messages=[{"role": "user", "content": prompt}],
         complex=True,
         max_tokens=16384,
