@@ -862,6 +862,69 @@ def _close_issue_driven_cycle(
         )
 
 
+def open_partial_pr(state: ProjectState, reason: str) -> dict | None:
+    """
+    Abre um DRAFT PR "incompleto" quando o run falha (exception/budget)
+    DEPOIS de ao menos uma stage ter comitado no branch. Humano decide:
+    merge (aceita trabalho parcial) ou close (rejeita e re-tick após fix).
+
+    No-op silencioso se: sem `github_repo`, sem `stages_committed`, ou
+    se `create_pr` lançar. Retorna pr_info dict ou None.
+    """
+    from ..storage import github_pm
+
+    repo_url = state.get("github_repo")
+    stages = list(state.get("stages_committed") or [])
+    if not repo_url or not stages:
+        return None
+
+    run_id = state.get("run_id", "unknown")
+    run_short = run_id[:8] if isinstance(run_id, str) else "unknown"
+    branch_name = f"run/{run_short}"
+    workflow = state.get("workflow_type", "?")
+    phase = state.get("current_phase", "?")
+
+    title = (
+        f"[INCOMPLETO] Cortex run {run_short} ({workflow}) "
+        f"— aborted at {phase}"
+    )
+    body = _build_pr_body(state, stages)
+    body += (
+        "\n\n---\n\n## Run abortado\n\n"
+        f"**Motivo:** {reason}\n\n"
+        f"**Última fase atingida:** `{phase}`\n\n"
+        f"**Stages comitadas no branch:** {', '.join(stages)}\n\n"
+        "Este PR abriu como **draft** porque o run não chegou ao final. "
+        "O trabalho já commitado está no branch — tu decides:\n"
+        "- **Merge** se o parcial for útil (ex: qualidade+EDA prontos, "
+        "modelagem não).\n"
+        "- **Close** + reabrir a issue pra re-tick depois de corrigir "
+        "o que causou o abort.\n"
+    )
+    try:
+        pr_info = github_pm.create_pr(
+            repo_url,
+            head=branch_name,
+            base="main",
+            title=title,
+            body=body,
+            draft=True,
+        )
+        if pr_info:
+            logger.warning(
+                "open_partial_pr: draft PR #%s aberto run=%s stages=%s reason=%s",
+                pr_info.get("number"), run_short, stages, reason,
+            )
+        else:
+            logger.warning(
+                "open_partial_pr: create_pr retornou None run=%s", run_short
+            )
+        return pr_info
+    except Exception as e:
+        logger.warning("open_partial_pr: create_pr lançou — %s", e)
+        return None
+
+
 def route_after_quality(state: ProjectState) -> str:
     """Após qualidade, vai pra hipótese (eda_hypothesis|full_ml) ou direto pro report (data_quality)."""
     workflow_type = state.get("workflow_type", "full_ml")
